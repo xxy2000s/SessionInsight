@@ -1,0 +1,25 @@
+[Unit]
+Description=SessionInsight
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/session-insight
+Environment=NODE_ENV=production
+Environment=APP_MODE=remote
+Environment=HOST=127.0.0.1
+Environment=PORT=5173
+Environment=SESSION_DATA_DIR=/var/lib/session-insight
+Environment=CLAUDE_HOME=/home/agent/.claude
+Environment=CODEX_HOME=/home/agent/.codex
+Environment=DOUJIE_HOME=/home/agent/.doujie
+EnvironmentFile=/etc/session-insight/session-insight.env
+ExecStart=/usr/bin/node server/index.mjs
+Restart=on-failure
+RestartSec=3
+User=session-insight
+Group=session-insight
+
+[Install]
+WantedBy=multi-user.target
+

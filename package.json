@@ -1,0 +1,39 @@
+{
+  "name": "session-insight",
+  "version": "0.1.0",
+  "description": "Inspect local Claude, Codex, and Doujie agent sessions by project.",
+  "engines": {
+    "node": ">=20.18.0"
+  },
+  "scripts": {
+    "dev": "NODE_ENV=development APP_MODE=local node server/index.mjs",
+    "dev:scan": "NODE_ENV=development SESSION_SOURCE=local-scan node server/index.mjs",
+    "dev:index": "NODE_ENV=development APP_MODE=local SESSION_SOURCE=local-index node server/index.mjs",
+    "build": "vite build",
+    "start": "NODE_ENV=production APP_MODE=remote node server/index.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "lint": "eslint . --ignore-pattern dist"
+  },
+  "dependencies": {
+    "chokidar": "^4.0.3",
+    "lucide-react": "0.468.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "4.7.0",
+    "eslint": "9.39.4",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.0.1",
+    "eslint-plugin-react-refresh": "0.4.24",
+    "globals": "16.5.0",
+    "typescript": "5.9.3",
+    "vite": "5.4.19"
+  },
+  "type": "module"
+}
