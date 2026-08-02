@@ -58,6 +58,8 @@ https://your-domain.example/?token=<long-random-browser-token>
 
 The server sets an HttpOnly cookie and redirects to `/`.
 
+For real deployment notes, including `BASE_PATH`, Caddy examples, Docker bridge networking, and Rollup/glibc build compatibility, see [docs/deployment.md](docs/deployment.md).
+
 ## Session Paths
 
 Default paths:
@@ -115,4 +117,3 @@ This repository should not include:
 - Existing private Git history from another project
 
 See [docs/open-source-release.md](docs/open-source-release.md) for a release checklist.
-

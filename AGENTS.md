@@ -17,6 +17,7 @@ Read these before changing runtime behavior or deployment docs:
 
 - `README.md`
 - `docs/modes.md`
+- `docs/deployment.md`
 - `docs/security.md`
 - `docs/open-source-release.md`
 
