@@ -9,6 +9,7 @@
     "dev": "NODE_ENV=development APP_MODE=dev node server/index.mjs",
     "dev:scan": "NODE_ENV=development SESSION_SOURCE=local-scan node server/index.mjs",
     "dev:index": "NODE_ENV=development APP_MODE=dev SESSION_SOURCE=local-index node server/index.mjs",
+    "push": "node scripts/push-sessions.mjs",
     "build": "vite build",
     "start": "NODE_ENV=production APP_MODE=production node server/index.mjs",
     "test": "node --test tests/*.test.mjs",

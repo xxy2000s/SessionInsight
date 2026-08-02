@@ -11,6 +11,7 @@ Browser
   -> HTTPS reverse proxy
   -> SessionInsight Node service
   -> local session files on the same machine
+  -> optional outbound pushed session data from another machine
   -> sharded index/cache
 ```
 
@@ -37,7 +38,9 @@ Baseline production environment:
 ```bash
 NODE_ENV=production
 APP_MODE=production
+SESSION_SOURCE=hybrid-index
 SESSION_ACCESS_TOKEN=<long-random-token>
+SESSION_PUSH_TOKENS=macbook:<different-long-random-token>
 SESSION_DATA_DIR=/var/lib/session-insight
 HOST=127.0.0.1
 PORT=5173
@@ -47,7 +50,17 @@ Production startup currently fails closed when `SESSION_ACCESS_TOKEN` is missing
 
 `APP_MODE=production` means "run with production defaults and auth requirements". It does not control where session data comes from.
 
-Session data source is controlled by `SESSION_SOURCE`. The current default is `SESSION_SOURCE=local-index`, which scans sessions on the machine where the Node process runs.
+Session data source is controlled by `SESSION_SOURCE`.
+
+Useful production values:
+
+```text
+local-index  = scan only the machine running the Node process
+push-index   = serve only machines that push data over HTTPS
+hybrid-index = scan the server machine and accept pushed machines
+```
+
+Machine tabs isolate these data sets in the UI.
 
 Legacy `APP_MODE=remote` is still accepted as an alias for `APP_MODE=production`.
 
@@ -64,6 +77,7 @@ Important points:
 - Use `NODE_ENV=production`.
 - Use `APP_MODE=production`.
 - Put `SESSION_ACCESS_TOKEN` in an environment file outside the repository.
+- Put `SESSION_PUSH_TOKENS` in an environment file outside the repository when accepting pushed machines.
 - Keep `SESSION_DATA_DIR` writable by the service user.
 - Prefer binding to `127.0.0.1` when the reverse proxy runs on the host network.
 - If a containerized reverse proxy must reach a host service, bind to a private bridge gateway address instead of `0.0.0.0`.
@@ -108,23 +122,31 @@ Caddy example:
 session-insight.example.com {
   encode zstd gzip
 
-  basic_auth {
-    user {$SESSION_INSIGHT_PASSWORD_HASH}
+  handle /api/push/* {
+    reverse_proxy 127.0.0.1:5173
   }
 
-  header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    -Server
-  }
+  handle {
+    basic_auth {
+      user {$SESSION_INSIGHT_PASSWORD_HASH}
+    }
 
-  reverse_proxy 127.0.0.1:5173 {
-    header_up Authorization "Bearer {$SESSION_INSIGHT_TOKEN}"
+    header {
+      Strict-Transport-Security "max-age=31536000; includeSubDomains"
+      X-Content-Type-Options "nosniff"
+      X-Frame-Options "DENY"
+      Referrer-Policy "strict-origin-when-cross-origin"
+      -Server
+    }
+
+    reverse_proxy 127.0.0.1:5173 {
+      header_up Authorization "Bearer {$SESSION_INSIGHT_TOKEN}"
+    }
   }
 }
 ```
+
+`/api/push/*` is intentionally outside browser Basic Auth in this example so the laptop pusher does not need browser credentials. The push API still requires a machine-bound push token over HTTPS.
 
 Generate the Caddy password hash on the server:
 
@@ -256,6 +278,7 @@ session-insight-vX.Y.Z.tar.gz
   package.json
   package-lock.json
   server/
+  scripts/
   dist/client/
   deploy/
   docs/
@@ -321,6 +344,7 @@ Alternative paths:
 During a real server deployment:
 
 - The service could read server-local Codex sessions through `SESSION_SOURCE=local-index`.
+- `SESSION_SOURCE=hybrid-index` is required when the same web service should show server-local sessions and Mac-pushed sessions.
 - The server did not have a Claude session directory yet.
 - Direct server-side build failed because Rollup's native binary required newer glibc.
 - Building locally, packaging the result, and copying `dist/client` to the server worked.
@@ -328,6 +352,7 @@ During a real server deployment:
 - A dedicated domain was simpler than mounting under a subpath.
 - Because Caddy ran in Docker, the Node service listened on a private Docker bridge gateway instead of `127.0.0.1`.
 - Reverse proxy Basic Auth plus upstream bearer-token injection avoided a second browser login while keeping SessionInsight's production token enabled.
+- `/api/push/*` must be reachable without browser Basic Auth if the Mac pusher is not going to send Basic Auth credentials. The push endpoint still requires a machine-bound push token.
 
 ## Smoke Tests
 
@@ -367,5 +392,28 @@ curl -u 'user:<password>' \
 Expected:
 
 ```json
-{"ok":true,"mode":"production","source":"local-index"}
+{"ok":true,"mode":"production","source":"hybrid-index"}
+```
+
+Push API should reject missing push tokens:
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" \
+  https://session-insight.example.com/api/push/macbook/claude/manifest
+```
+
+Expected:
+
+```text
+401
+```
+
+One-shot laptop push:
+
+```bash
+SESSION_PUSH_URL=https://session-insight.example.com \
+SESSION_PUSH_TOKEN=<push-token> \
+SESSION_PUSH_MACHINE_ID=macbook \
+SESSION_PUSH_MACHINE_LABEL="MacBook" \
+npm run push -- --once
 ```

@@ -188,9 +188,9 @@ summary:focus-visible {
   color: var(--accent-strong);
 }
 
+.machine-switch,
 .provider-switch {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   border: 1px solid var(--line);
   background: var(--panel);
@@ -199,6 +199,15 @@ summary:focus-visible {
   margin: 10px 0 0;
 }
 
+.machine-switch {
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+}
+
+.provider-switch {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.machine-switch button,
 .provider-switch button {
   border: 0;
   background: transparent;
@@ -207,8 +216,13 @@ summary:focus-visible {
   cursor: pointer;
   min-height: 28px;
   font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
+.machine-switch button.is-selected,
 .provider-switch button.is-selected {
   background: #1f2328;
   color: #ffffff;

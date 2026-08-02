@@ -11,6 +11,7 @@ SessionInsight 的推荐部署方式是：
   -> HTTPS 反向代理
   -> SessionInsight Node 服务
   -> 当前机器上的 agent session 文件
+  -> 可选：其他机器通过 outbound push 推上来的 session
   -> 本地分片索引/cache
 ```
 
@@ -56,7 +57,9 @@ http://localhost:5173
 ```bash
 NODE_ENV=production
 APP_MODE=production
+SESSION_SOURCE=hybrid-index
 SESSION_ACCESS_TOKEN=<长随机 token>
+SESSION_PUSH_TOKENS=macbook:<另一个长随机 push token>
 SESSION_DATA_DIR=/var/lib/session-insight
 HOST=127.0.0.1
 PORT=5173
@@ -64,7 +67,17 @@ PORT=5173
 
 注意：`APP_MODE=production` 只表示生产运行模式，例如强制鉴权、通常放在 HTTPS 反代后面。它不表示 session 数据来自哪里。
 
-session 数据来源由 `SESSION_SOURCE` 控制。当前默认是 `SESSION_SOURCE=local-index`，也就是解析运行 Node 服务的当前机器上的 session 文件。
+session 数据来源由 `SESSION_SOURCE` 控制。
+
+生产里常用的值：
+
+```text
+local-index  = 只扫描运行 Node 服务的当前机器
+push-index   = 只展示通过 HTTPS 推上来的机器
+hybrid-index = 扫描服务器本机，同时接收其他机器推送
+```
+
+Web UI 会把不同机器作为最外层 tab 隔离展示，避免不同机器的相同 session id 或相同项目路径互相覆盖。
 
 旧的 `APP_MODE=remote` 仍然兼容，会被当成 `APP_MODE=production`。
 
@@ -90,23 +103,31 @@ Caddy 示例：
 session-insight.example.com {
   encode zstd gzip
 
-  basic_auth {
-    user {$SESSION_INSIGHT_PASSWORD_HASH}
+  handle /api/push/* {
+    reverse_proxy 127.0.0.1:5173
   }
 
-  header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "DENY"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    -Server
-  }
+  handle {
+    basic_auth {
+      user {$SESSION_INSIGHT_PASSWORD_HASH}
+    }
 
-  reverse_proxy 127.0.0.1:5173 {
-    header_up Authorization "Bearer {$SESSION_INSIGHT_TOKEN}"
+    header {
+      Strict-Transport-Security "max-age=31536000; includeSubDomains"
+      X-Content-Type-Options "nosniff"
+      X-Frame-Options "DENY"
+      Referrer-Policy "strict-origin-when-cross-origin"
+      -Server
+    }
+
+    reverse_proxy 127.0.0.1:5173 {
+      header_up Authorization "Bearer {$SESSION_INSIGHT_TOKEN}"
+    }
   }
 }
 ```
+
+这里 `/api/push/*` 没有放在浏览器 Basic Auth 后面，是为了让 Mac pusher 不需要携带浏览器账号密码。push API 自己仍然要求绑定到机器 id 的 push token，并且必须走 HTTPS。
 
 其中：
 
@@ -182,6 +203,7 @@ session-insight-vX.Y.Z.tar.gz
   package.json
   package-lock.json
   server/
+  scripts/
   dist/client/
   deploy/
   docs/
@@ -291,7 +313,24 @@ curl -u 'user:<password>' \
 期望返回：
 
 ```json
-{"ok":true,"mode":"production","source":"local-index"}
+{"ok":true,"mode":"production","source":"hybrid-index"}
+```
+
+push API 未带 push token 应该返回 `401`：
+
+```bash
+curl -sS -o /dev/null -w "%{http_code}\n" \
+  https://session-insight.example.com/api/push/macbook/claude/manifest
+```
+
+Mac 一次性推送：
+
+```bash
+SESSION_PUSH_URL=https://session-insight.example.com \
+SESSION_PUSH_TOKEN=<push-token> \
+SESSION_PUSH_MACHINE_ID=macbook \
+SESSION_PUSH_MACHINE_LABEL="MacBook" \
+npm run push -- --once
 ```
 
 ## 当前已知状态
@@ -303,6 +342,7 @@ curl -u 'user:<password>' \
 - Caddy 会向 SessionInsight 自动注入 bearer token，所以浏览器侧不需要再输入 `?token=`。
 - Node 服务仍然保留 `SESSION_ACCESS_TOKEN`，没有裸奔。
 - 服务器本地 Codex session 可以通过 `SESSION_SOURCE=local-index` 被解析。
+- 如果要同时看服务器本机和 Mac 本机数据，应使用 `SESSION_SOURCE=hybrid-index`，并通过 machine tab 隔离两边数据。
 - 服务器上暂时没有 Claude session 目录时，Claude 项目为空是正常现象。
 - 服务器直接 `npm run build` 可能因为 glibc/Rollup native 包失败，当前用本地构建、打包、同步 `dist/client` 的方式绕过。
 - 以后可以改成 GitHub Actions 构建 release 包，服务器直接拉预构建产物，不依赖你的本地 Mac。

@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
+import { createGunzip, gzipSync } from "node:zlib";
 import chokidar from "chokidar";
 import {
   clearSessionCache,
@@ -31,11 +31,17 @@ import {
   syncLocalProviderPath,
 } from "./localIndex.mjs";
 import {
+  deletePushedSession,
+  getDefaultMachineId,
+  getMachines,
   getPushedIndex,
+  getPushedManifest,
   getPushedProjectSessions,
   getPushedSessionDetail,
   isLocalIndexSourceMode,
   isShardedSourceMode,
+  savePushedSession,
+  savePushedSnapshot,
   searchPushedSessions,
   searchSessionRows,
 } from "./sessionStore.mjs";
@@ -54,6 +60,7 @@ const port = Number(process.env.PORT || 5173);
 const host = process.env.HOST || "127.0.0.1";
 const eventClients = new Set();
 const watcherStatus = new Map();
+const maxPushBytes = Number(process.env.SESSION_PUSH_MAX_BYTES || 200 * 1024 * 1024);
 
 let watchersStarted = false;
 let changeVersion = 0;
@@ -108,7 +115,48 @@ server.listen(port, host, () => {
 
 async function handleApi(url, req, res) {
   if (url.pathname === "/api/health") {
-    sendJson(res, 200, { ok: true, mode: appMode, source: getSessionSourceMode() });
+    sendJson(res, 200, {
+      ok: true,
+      mode: appMode,
+      source: getSessionSourceMode(),
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/machines") {
+    sendJson(res, 200, { machines: await getMachines() });
+    return;
+  }
+
+  const pushManifestMatch = url.pathname.match(
+    /^\/api\/push\/([^/]+)\/([^/]+)\/manifest$/,
+  );
+  if (pushManifestMatch) {
+    await handlePushManifest(pushManifestMatch[1], pushManifestMatch[2], req, res);
+    return;
+  }
+
+  const pushSessionMatch = url.pathname.match(
+    /^\/api\/push\/([^/]+)\/([^/]+)\/session$/,
+  );
+  if (pushSessionMatch) {
+    await handlePushSession(pushSessionMatch[1], pushSessionMatch[2], req, res);
+    return;
+  }
+
+  const pushDeleteMatch = url.pathname.match(
+    /^\/api\/push\/([^/]+)\/([^/]+)\/delete$/,
+  );
+  if (pushDeleteMatch) {
+    await handlePushDelete(pushDeleteMatch[1], pushDeleteMatch[2], req, res);
+    return;
+  }
+
+  const pushSnapshotMatch = url.pathname.match(
+    /^\/api\/push\/([^/]+)\/([^/]+)\/snapshot$/,
+  );
+  if (pushSnapshotMatch) {
+    await handlePushSnapshot(pushSnapshotMatch[1], pushSnapshotMatch[2], req, res);
     return;
   }
 
@@ -155,7 +203,10 @@ async function handleApi(url, req, res) {
 
   const providerProjectsMatch = url.pathname.match(/^\/api\/providers\/([^/]+)\/projects$/);
   if (providerProjectsMatch) {
-    const index = await scanProviderSessions(providerProjectsMatch[1]);
+    const index = await scanMachineProviderSessions(
+      getDefaultMachineId(),
+      providerProjectsMatch[1],
+    );
     if (!index) {
       sendJson(res, 404, { error: `Unknown provider: ${providerProjectsMatch[1]}` });
       return;
@@ -168,7 +219,8 @@ async function handleApi(url, req, res) {
     /^\/api\/providers\/([^/]+)\/projects\/([^/]+)\/sessions$/,
   );
   if (providerProjectMatch) {
-    const sessions = await getProviderProjectSessions(
+    const sessions = await getMachineProviderProjectSessions(
+      getDefaultMachineId(),
       providerProjectMatch[1],
       providerProjectMatch[2],
     );
@@ -187,7 +239,12 @@ async function handleApi(url, req, res) {
     const provider = providerSessionSearchMatch[1];
     const query = url.searchParams.get("q") || "";
     const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 80)));
-    const sessions = await searchProviderSessions(provider, query, limit);
+    const sessions = await searchMachineProviderSessions(
+      getDefaultMachineId(),
+      provider,
+      query,
+      limit,
+    );
     if (!sessions) {
       sendJson(res, 404, { error: `Unknown provider: ${provider}` });
       return;
@@ -200,9 +257,97 @@ async function handleApi(url, req, res) {
     /^\/api\/providers\/([^/]+)\/sessions\/([^/]+)$/,
   );
   if (providerSessionMatch) {
-    const session = await getProviderSessionDetail(
+    const session = await getMachineProviderSessionDetail(
+      getDefaultMachineId(),
       providerSessionMatch[1],
       providerSessionMatch[2],
+    );
+    if (!session) {
+      sendJson(res, 404, { error: "Session not found" });
+      return;
+    }
+    sendJson(res, 200, {
+      session: makePublicSessionDetail(session, {
+        includeHiddenEvents: url.searchParams.get("includeHiddenEvents") === "1",
+      }),
+    });
+    return;
+  }
+
+  const machineProjectsMatch = url.pathname.match(
+    /^\/api\/machines\/([^/]+)\/providers\/([^/]+)\/projects$/,
+  );
+  if (machineProjectsMatch) {
+    const index = await scanMachineProviderSessions(
+      machineProjectsMatch[1],
+      machineProjectsMatch[2],
+    );
+    if (!index) {
+      sendJson(res, 404, { error: `Unknown provider: ${machineProjectsMatch[2]}` });
+      return;
+    }
+    sendJson(res, 200, summarizeIndex(index));
+    return;
+  }
+
+  const machineRescanMatch = url.pathname.match(
+    /^\/api\/machines\/([^/]+)\/providers\/([^/]+)\/rescan$/,
+  );
+  if (machineRescanMatch) {
+    const result = await rescanMachineProvider(machineRescanMatch[1], machineRescanMatch[2]);
+    if (!result) {
+      sendJson(res, 404, { error: `Unknown provider: ${machineRescanMatch[2]}` });
+      return;
+    }
+    sendJson(res, 200, summarizeIndex(result));
+    return;
+  }
+
+  const machineProjectMatch = url.pathname.match(
+    /^\/api\/machines\/([^/]+)\/providers\/([^/]+)\/projects\/([^/]+)\/sessions$/,
+  );
+  if (machineProjectMatch) {
+    const sessions = await getMachineProviderProjectSessions(
+      machineProjectMatch[1],
+      machineProjectMatch[2],
+      machineProjectMatch[3],
+    );
+    if (!sessions) {
+      sendJson(res, 404, { error: `Unknown provider: ${machineProjectMatch[2]}` });
+      return;
+    }
+    sendJson(res, 200, { sessions });
+    return;
+  }
+
+  const machineSessionSearchMatch = url.pathname.match(
+    /^\/api\/machines\/([^/]+)\/providers\/([^/]+)\/sessions\/search$/,
+  );
+  if (machineSessionSearchMatch) {
+    const query = url.searchParams.get("q") || "";
+    const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 80)));
+    const sessions = await searchMachineProviderSessions(
+      machineSessionSearchMatch[1],
+      machineSessionSearchMatch[2],
+      query,
+      limit,
+    );
+    if (!sessions) {
+      sendJson(res, 404, { error: `Unknown provider: ${machineSessionSearchMatch[2]}` });
+      return;
+    }
+    sendJson(res, 200, { sessions });
+    return;
+  }
+
+  const machineSessionMatch = url.pathname.match(
+    /^\/api\/machines\/([^/]+)\/providers\/([^/]+)\/sessions\/([^/]+)$/,
+  );
+  if (machineSessionMatch) {
+    const session = await getMachineProviderSessionDetail(
+      machineSessionMatch[1],
+      machineSessionMatch[2],
+      machineSessionMatch[3],
     );
     if (!session) {
       sendJson(res, 404, { error: "Session not found" });
@@ -246,6 +391,7 @@ async function handleApi(url, req, res) {
 function authorizeAccess(url, req, res) {
   if (!process.env.SESSION_ACCESS_TOKEN) return true;
   if (url.pathname === "/api/health") return true;
+  if (url.pathname.startsWith("/api/push/")) return true;
 
   const token = url.searchParams.get("token");
   if (token && token === process.env.SESSION_ACCESS_TOKEN) {
@@ -318,12 +464,19 @@ function normalizeAppMode(value) {
 }
 
 async function scanProviderSessions(provider, options) {
+  return scanMachineProviderSessions(getDefaultMachineId(), provider, options);
+}
+
+async function scanMachineProviderSessions(machineId, provider, options) {
+  if (machineId !== getDefaultMachineId()) {
+    return getPushedIndex(provider, machineId);
+  }
   if (isLocalIndexSourceMode()) {
     const result = await ensureLocalProviderIndex(provider, {
       force: options?.noCache,
     });
     if (!result) return null;
-    return getPushedIndex(provider);
+    return getPushedIndex(provider, machineId);
   }
   if (provider === "claude") return scanClaudeSessions(options);
   if (provider === "codex") return scanCodexSessions(options);
@@ -331,11 +484,14 @@ async function scanProviderSessions(provider, options) {
   return null;
 }
 
-async function getProviderProjectSessions(provider, projectId) {
+async function getMachineProviderProjectSessions(machineId, provider, projectId) {
+  if (machineId !== getDefaultMachineId()) {
+    return getPushedProjectSessions(provider, projectId, machineId);
+  }
   if (isLocalIndexSourceMode()) {
     const result = await ensureLocalProviderIndex(provider);
     if (!result) return null;
-    return getPushedProjectSessions(provider, projectId);
+    return getPushedProjectSessions(provider, projectId, machineId);
   }
   if (provider === "claude") return getProjectSessions(projectId);
   if (provider === "codex") return getCodexProjectSessions(projectId);
@@ -343,11 +499,14 @@ async function getProviderProjectSessions(provider, projectId) {
   return null;
 }
 
-async function getProviderSessionDetail(provider, sessionId) {
+async function getMachineProviderSessionDetail(machineId, provider, sessionId) {
+  if (machineId !== getDefaultMachineId()) {
+    return getPushedSessionDetail(provider, sessionId, machineId);
+  }
   if (isLocalIndexSourceMode()) {
     const result = await ensureLocalProviderIndex(provider);
     if (!result) return null;
-    return getPushedSessionDetail(provider, sessionId);
+    return getPushedSessionDetail(provider, sessionId, machineId);
   }
   if (provider === "claude") return getSessionDetail(sessionId);
   if (provider === "codex") return getCodexSessionDetail(sessionId);
@@ -355,11 +514,14 @@ async function getProviderSessionDetail(provider, sessionId) {
   return null;
 }
 
-async function searchProviderSessions(provider, query, limit) {
+async function searchMachineProviderSessions(machineId, provider, query, limit) {
+  if (machineId !== getDefaultMachineId()) {
+    return searchPushedSessions(provider, query, limit, machineId);
+  }
   if (isLocalIndexSourceMode()) {
     const result = await ensureLocalProviderIndex(provider);
     if (!result) return null;
-    return searchPushedSessions(provider, query, limit);
+    return searchPushedSessions(provider, query, limit, machineId);
   }
   const index = await scanProviderSessions(provider);
   if (!index) return null;
@@ -371,6 +533,100 @@ async function searchProviderSessions(provider, query, limit) {
   return searchSessionRows(projectSessions, query, limit);
 }
 
+async function rescanMachineProvider(machineId, provider) {
+  if (machineId !== getDefaultMachineId()) {
+    return getPushedIndex(provider, machineId);
+  }
+  if (isLocalIndexSourceMode()) {
+    const result = await rebuildLocalProviderIndex(provider);
+    if (!result) return null;
+    return getPushedIndex(provider, machineId);
+  }
+  clearProviderCache(provider);
+  return scanProviderSessions(provider, { noCache: true });
+}
+
+async function handlePushManifest(machineId, provider, req, res) {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  if (!isPushAuthorized(req, machineId)) {
+    sendJson(res, 401, { error: "Unauthorized" });
+    return;
+  }
+  try {
+    sendJson(res, 200, await getPushedManifest(provider, machineId));
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
+async function handlePushSession(machineId, provider, req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  if (!isPushAuthorized(req, machineId)) {
+    sendJson(res, 401, { error: "Unauthorized" });
+    return;
+  }
+  try {
+    const payload = await readRequestJson(req, maxPushBytes);
+    const result = await savePushedSession(provider, { ...payload, machineId }, machineId);
+    sendPushChange(machineId, provider, result.pushedAt, "push-session", result.id);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
+async function handlePushDelete(machineId, provider, req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  if (!isPushAuthorized(req, machineId)) {
+    sendJson(res, 401, { error: "Unauthorized" });
+    return;
+  }
+  try {
+    const payload = await readRequestJson(req, maxPushBytes);
+    const result = await deletePushedSession(provider, { ...payload, machineId }, machineId);
+    sendPushChange(machineId, provider, result.pushedAt, "push-delete", result.id);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
+async function handlePushSnapshot(machineId, provider, req, res) {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+  if (!isPushAuthorized(req, machineId)) {
+    sendJson(res, 401, { error: "Unauthorized" });
+    return;
+  }
+  if (process.env.SESSION_PUSH_ENABLE_SNAPSHOT !== "1") {
+    sendJson(res, 403, { error: "Snapshot push is disabled" });
+    return;
+  }
+  try {
+    const payload = await readRequestJson(req, maxPushBytes);
+    if (!payload.allowEmptySnapshot && Object.keys(payload.sessions || {}).length === 0) {
+      sendJson(res, 400, { error: "Empty snapshot requires allowEmptySnapshot=true" });
+      return;
+    }
+    const result = await savePushedSnapshot(provider, { ...payload, machineId }, machineId);
+    sendPushChange(machineId, provider, result.pushedAt, "push-snapshot", "snapshot");
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
 function clearProviderCache(provider) {
   clearLocalIndexCache(provider);
   if (provider === "claude") clearSessionCache();
@@ -380,6 +636,7 @@ function clearProviderCache(provider) {
 
 function handleEvents(url, req, res) {
   const provider = url.searchParams.get("provider") || "all";
+  const machineId = url.searchParams.get("machine") || getDefaultMachineId();
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
@@ -391,12 +648,13 @@ function handleEvents(url, req, res) {
 
   res.write(
     `event: ready\ndata: ${JSON.stringify({
+      machineId,
       provider,
       watchers: getWatcherStatus(provider),
     })}\n\n`,
   );
 
-  const client = { provider, res };
+  const client = { machineId, provider, res };
   eventClients.add(client);
   req.on("close", () => {
     eventClients.delete(client);
@@ -519,13 +777,32 @@ function getWatcherStatus(provider) {
 
 function sendProviderWatcherStatus(provider) {
   const payload = {
+    machineId: getDefaultMachineId(),
     provider,
     watchers: getWatcherStatus(provider),
     at: new Date().toISOString(),
   };
   for (const client of eventClients) {
+    if (client.machineId !== getDefaultMachineId()) continue;
     if (client.provider !== "all" && client.provider !== provider) continue;
     client.res.write(`event: watcher-status\ndata: ${JSON.stringify(payload)}\n\n`);
+  }
+}
+
+function sendPushChange(machineId, provider, at, eventType, fileName) {
+  changeVersion += 1;
+  const payload = {
+    machineId,
+    provider,
+    version: changeVersion,
+    at: at || new Date().toISOString(),
+    eventType,
+    fileName,
+  };
+  for (const client of eventClients) {
+    if (client.machineId !== machineId) continue;
+    if (client.provider !== "all" && client.provider !== provider) continue;
+    client.res.write(`event: change\ndata: ${JSON.stringify(payload)}\n\n`);
   }
 }
 
@@ -553,12 +830,14 @@ function scheduleProviderChange(provider, detail) {
       }
       changeVersion += 1;
       const payload = {
+        machineId: getDefaultMachineId(),
         provider,
         version: changeVersion,
         at: new Date().toISOString(),
         ...detail,
       };
       for (const client of eventClients) {
+        if (client.machineId !== getDefaultMachineId()) continue;
         if (client.provider !== "all" && client.provider !== provider) continue;
         client.res.write(`event: change\ndata: ${JSON.stringify(payload)}\n\n`);
       }
@@ -568,6 +847,86 @@ function scheduleProviderChange(provider, detail) {
 
 function getSessionSourceMode() {
   return process.env.SESSION_SOURCE || "local-scan";
+}
+
+async function readRequestJson(req, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw new Error(`Request body exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(chunk);
+  }
+  const raw = Buffer.concat(chunks);
+  const body = String(req.headers["content-encoding"] || "").toLowerCase() === "gzip"
+    ? await gunzipLimited(raw, maxBytes)
+    : raw;
+  if (body.length > maxBytes) {
+    throw new Error(`Request body exceeds ${maxBytes} bytes after decompression`);
+  }
+  return JSON.parse(body.toString("utf8") || "{}");
+}
+
+function gunzipLimited(raw, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const gunzip = createGunzip();
+    const chunks = [];
+    let total = 0;
+    gunzip.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        gunzip.destroy(new Error(`Request body exceeds ${maxBytes} bytes after decompression`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    gunzip.on("error", reject);
+    gunzip.on("end", () => resolve(Buffer.concat(chunks)));
+    gunzip.end(raw);
+  });
+}
+
+function isPushAuthorized(req, machineId) {
+  const token = getPushTokenForMachine(machineId);
+  if (!token) return false;
+  const headerToken = req.headers["x-session-push-token"];
+  return getBearerToken(req) === token || headerToken === token;
+}
+
+function getPushTokenForMachine(machineId) {
+  if (machineId === getDefaultMachineId() && process.env.SESSION_PUSH_ALLOW_DEFAULT_MACHINE !== "1") {
+    return "";
+  }
+  const tokens = parseMachineTokenMap(process.env.SESSION_PUSH_TOKENS || "");
+  if (tokens.has(machineId)) return tokens.get(machineId);
+  if (process.env.SESSION_PUSH_TOKEN) {
+    const legacyMachineId = process.env.SESSION_PUSH_MACHINE_ID || "mac";
+    if (machineId === legacyMachineId) return process.env.SESSION_PUSH_TOKEN;
+  }
+  return "";
+}
+
+function parseMachineTokenMap(value) {
+  const map = new Map();
+  const trimmed = value.trim();
+  if (!trimmed) return map;
+  if (trimmed.startsWith("{")) {
+    const parsed = JSON.parse(trimmed);
+    for (const [machineId, token] of Object.entries(parsed)) {
+      if (token) map.set(machineId, String(token));
+    }
+    return map;
+  }
+  for (const item of trimmed.split(",")) {
+    const separator = item.indexOf(":");
+    if (separator <= 0) continue;
+    const machineId = item.slice(0, separator).trim();
+    const token = item.slice(separator + 1).trim();
+    if (machineId && token) map.set(machineId, token);
+  }
+  return map;
 }
 
 function summarizeIndex(index) {

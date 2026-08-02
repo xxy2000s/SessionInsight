@@ -57,7 +57,7 @@ jobs:
           name="session-insight-${version}"
           mkdir -p "release/${name}"
           cp package.json package-lock.json README.md AGENTS.md .env.example "release/${name}/"
-          cp -R server deploy docs "release/${name}/"
+          cp -R server scripts deploy docs "release/${name}/"
           mkdir -p "release/${name}/dist"
           cp -R dist/client "release/${name}/dist/"
           tar -C release -czf "release/${name}.tar.gz" "${name}"

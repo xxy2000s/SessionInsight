@@ -78,7 +78,10 @@ test("incremental session store updates are sharded, indexed, attached, and dele
   );
 
   const indexShard = JSON.parse(
-    await readFile(path.join(root, "providers", "codex", "index.json"), "utf8"),
+    await readFile(
+      path.join(root, "machines", "server", "providers", "codex", "index.json"),
+      "utf8",
+    ),
   );
   assert.equal(indexShard.projectSessions[main.projectId][0].id, "main");
 
@@ -90,6 +93,63 @@ test("incremental session store updates are sharded, indexed, attached, and dele
     manifestAfterDelete.sessions.map((session) => session.fileName),
     ["main.jsonl"],
   );
+});
+
+test("session store isolates identical session ids by machine", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "session-store-machines-"));
+  process.env.SESSION_DATA_DIR = root;
+  process.env.SESSION_STORE_PATH = path.join(root, "legacy.json");
+
+  await savePushedSession(
+    "codex",
+    {
+      sourceHost: "server",
+      machineId: "server",
+      machineLabel: "Server",
+      session: makeSession({
+        id: "same",
+        filePath: "/server/same.jsonl",
+        fileName: "same.jsonl",
+        codexThreadId: "thread-server",
+        title: "Server session",
+        messageCount: 2,
+        lastTimestamp: "2026-07-29T01:00:00.000Z",
+      }),
+    },
+    "server",
+  );
+
+  await savePushedSession(
+    "codex",
+    {
+      sourceHost: "mac",
+      machineId: "macbook",
+      machineLabel: "MacBook",
+      session: makeSession({
+        id: "same",
+        filePath: "/mac/same.jsonl",
+        fileName: "same.jsonl",
+        codexThreadId: "thread-mac",
+        title: "Mac session",
+        messageCount: 3,
+        lastTimestamp: "2026-07-29T02:00:00.000Z",
+      }),
+    },
+    "macbook",
+  );
+
+  const serverDetail = await getPushedSessionDetail("codex", "same", "server");
+  const macDetail = await getPushedSessionDetail("codex", "same", "macbook");
+  assert.equal(serverDetail.title, "Server session");
+  assert.equal(macDetail.title, "Mac session");
+
+  const machinesIndex = JSON.parse(
+    await readFile(
+      path.join(root, "machines", "macbook", "providers", "codex", "index.json"),
+      "utf8",
+    ),
+  );
+  assert.equal(machinesIndex.machineId, "macbook");
 });
 
 function makeSession(overrides) {

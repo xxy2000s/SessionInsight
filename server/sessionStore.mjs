@@ -8,11 +8,12 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { hostname } from "node:os";
 import path from "node:path";
 
 const DEFAULT_STORE_PATH = path.resolve("data/session-store.json");
 const PROVIDERS = new Set(["claude", "codex", "doujie"]);
+const DEFAULT_MACHINE_ID = "server";
+const DEFAULT_MACHINE_LABEL = "Server";
 
 let writeQueue = Promise.resolve();
 const migratedProviders = new Set();
@@ -26,40 +27,109 @@ export function getSessionDataDir() {
 }
 
 export function isPushSourceMode() {
-  return process.env.SESSION_SOURCE === "push";
+  return process.env.SESSION_SOURCE === "push" || process.env.SESSION_SOURCE === "push-index";
 }
 
 export function isLocalIndexSourceMode() {
-  return process.env.SESSION_SOURCE === "local-index";
+  return (
+    process.env.SESSION_SOURCE === "local-index" ||
+    process.env.SESSION_SOURCE === "hybrid-index"
+  );
+}
+
+export function isHybridSourceMode() {
+  return process.env.SESSION_SOURCE === "hybrid-index";
 }
 
 export function isShardedSourceMode() {
   return isPushSourceMode() || isLocalIndexSourceMode();
 }
 
-export async function getPushedIndex(provider) {
-  validateProvider(provider);
-  await ensureProviderMigrated(provider);
-  const index = await readProviderIndex(provider);
-  return index ? sanitizeIndex(provider, index) : makeEmptyIndex(provider);
+export function getDefaultMachineId() {
+  return normalizeMachineId(process.env.SESSION_LOCAL_MACHINE_ID || DEFAULT_MACHINE_ID);
 }
 
-export async function getPushedProjectSessions(provider, projectId) {
+export function getDefaultMachineLabel() {
+  return normalizeMachineLabel(process.env.SESSION_LOCAL_MACHINE_LABEL || DEFAULT_MACHINE_LABEL);
+}
+
+export async function getMachines() {
+  const machines = new Map();
+  const addMachine = (machine) => {
+    const id = normalizeMachineId(machine.id);
+    machines.set(id, {
+      id,
+      label: normalizeMachineLabel(machine.label || id),
+      kind: machine.kind || "remote",
+      updatedAt: machine.updatedAt || "",
+    });
+  };
+
+  if (isLocalIndexSourceMode()) {
+    addMachine({
+      id: getDefaultMachineId(),
+      label: getDefaultMachineLabel(),
+      kind: "local",
+    });
+  }
+
+  let names = [];
+  try {
+    names = await readdir(machinesDir(), { withFileTypes: true });
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  for (const entry of names) {
+    if (!entry.isDirectory()) continue;
+    const machine = await readMachineMetadata(entry.name);
+    addMachine(machine || { id: entry.name, label: entry.name });
+  }
+
+  return [...machines.values()].sort((left, right) => {
+    if (left.id === getDefaultMachineId()) return -1;
+    if (right.id === getDefaultMachineId()) return 1;
+    return left.label.localeCompare(right.label);
+  });
+}
+
+export async function getPushedIndex(provider, machineId = getDefaultMachineId()) {
   validateProvider(provider);
-  await ensureProviderMigrated(provider);
-  const index = await readProviderIndex(provider);
+  const normalizedMachineId = normalizeMachineId(machineId);
+  await ensureProviderMigrated(provider, normalizedMachineId);
+  const index = await readProviderIndex(provider, normalizedMachineId);
+  return index
+    ? sanitizeIndex(provider, index, normalizedMachineId)
+    : makeEmptyIndex(provider, normalizedMachineId);
+}
+
+export async function getPushedProjectSessions(
+  provider,
+  projectId,
+  machineId = getDefaultMachineId(),
+) {
+  validateProvider(provider);
+  const normalizedMachineId = normalizeMachineId(machineId);
+  await ensureProviderMigrated(provider, normalizedMachineId);
+  const index = await readProviderIndex(provider, normalizedMachineId);
   return index?.projectSessions?.[projectId] || [];
 }
 
-export async function getPushedSessionDetail(provider, sessionId) {
+export async function getPushedSessionDetail(
+  provider,
+  sessionId,
+  machineId = getDefaultMachineId(),
+) {
   validateProvider(provider);
-  await ensureProviderMigrated(provider);
-  const detail = await readSessionDetail(provider, sessionId);
+  const normalizedMachineId = normalizeMachineId(machineId);
+  await ensureProviderMigrated(provider, normalizedMachineId);
+  const detail = await readSessionDetail(provider, sessionId, normalizedMachineId);
   if (!detail) return null;
 
-  const row = await findSessionRow(provider, sessionId);
+  const row = await findSessionRow(provider, sessionId, normalizedMachineId);
   return {
     ...detail,
+    machineId: normalizedMachineId,
     parentSessionRowId: row?.parentSessionRowId || detail.parentSessionRowId || "",
     parentSessionTitle: row?.parentSessionTitle || detail.parentSessionTitle || "",
     childSessions: row?.childSessions || [],
@@ -67,19 +137,27 @@ export async function getPushedSessionDetail(provider, sessionId) {
   };
 }
 
-export async function searchPushedSessions(provider, query, limit = 80) {
+export async function searchPushedSessions(
+  provider,
+  query,
+  limit = 80,
+  machineId = getDefaultMachineId(),
+) {
   validateProvider(provider);
-  await ensureProviderMigrated(provider);
-  const index = await readProviderIndex(provider);
+  const normalizedMachineId = normalizeMachineId(machineId);
+  await ensureProviderMigrated(provider, normalizedMachineId);
+  const index = await readProviderIndex(provider, normalizedMachineId);
   return searchSessionRows(index?.projectSessions || {}, query, limit);
 }
 
-export async function getPushedManifest(provider) {
+export async function getPushedManifest(provider, machineId = getDefaultMachineId()) {
   validateProvider(provider);
-  await ensureProviderMigrated(provider);
-  const summaries = await readProviderSummaries(provider);
+  const normalizedMachineId = normalizeMachineId(machineId);
+  await ensureProviderMigrated(provider, normalizedMachineId);
+  const summaries = await readProviderSummaries(provider, normalizedMachineId);
   return {
     provider,
+    machineId: normalizedMachineId,
     sessions: summaries.map((summary) => ({
       id: summary.id,
       filePath: summary.filePath || "",
@@ -92,26 +170,38 @@ export async function getPushedManifest(provider) {
   };
 }
 
-export async function savePushedSnapshot(provider, payload) {
+export async function savePushedSnapshot(
+  provider,
+  payload,
+  machineId = payload?.machineId || getDefaultMachineId(),
+) {
   validateProvider(provider);
+  const normalizedMachineId = normalizeMachineId(machineId);
   validateSnapshotPayload(payload);
   const details = Object.values(payload.sessions || {});
 
   writeQueue = writeQueue.then(async () => {
-    await resetProviderShards(provider);
+    await writeMachineMetadata({
+      id: normalizedMachineId,
+      label: payload.machineLabel || payload.sourceLabel || payload.sourceHost || normalizedMachineId,
+      kind: payload.machineKind || "push",
+    });
+    await resetProviderShards(provider, normalizedMachineId);
     for (const detail of details) {
-      await writeSessionShard(provider, normalizeDetail(provider, detail));
+      await writeSessionShard(provider, normalizeDetail(provider, detail, normalizedMachineId));
     }
-    await rebuildProviderIndex(provider, {
-      sourceHost: payload.sourceHost || hostname(),
+    await rebuildProviderIndex(provider, normalizedMachineId, {
+      sourceHost: payload.sourceHost || normalizedMachineId,
+      machineLabel: payload.machineLabel || payload.sourceLabel || payload.sourceHost || "",
       pushedAt: new Date().toISOString(),
     });
   });
   await writeQueue;
 
-  const index = await readProviderIndex(provider);
+  const index = await readProviderIndex(provider, normalizedMachineId);
   return {
     provider,
+    machineId: normalizedMachineId,
     pushedAt: index?.pushedAt || "",
     projectCount: index?.projectCount || 0,
     sessionCount: index?.sessionCount || 0,
@@ -119,22 +209,34 @@ export async function savePushedSnapshot(provider, payload) {
   };
 }
 
-export async function savePushedSession(provider, payload) {
+export async function savePushedSession(
+  provider,
+  payload,
+  machineId = payload?.machineId || getDefaultMachineId(),
+) {
   validateProvider(provider);
-  const detail = normalizeDetail(provider, payload?.session || payload?.detail || payload);
+  const normalizedMachineId = normalizeMachineId(machineId);
+  const detail = normalizeDetail(provider, payload?.session || payload?.detail || payload, normalizedMachineId);
 
   writeQueue = writeQueue.then(async () => {
-    await writeSessionShard(provider, detail);
-    await rebuildProviderIndex(provider, {
-      sourceHost: payload?.sourceHost || hostname(),
+    await writeMachineMetadata({
+      id: normalizedMachineId,
+      label: payload?.machineLabel || payload?.sourceLabel || payload?.sourceHost || normalizedMachineId,
+      kind: payload?.machineKind || "push",
+    });
+    await writeSessionShard(provider, detail, normalizedMachineId);
+    await rebuildProviderIndex(provider, normalizedMachineId, {
+      sourceHost: payload?.sourceHost || normalizedMachineId,
+      machineLabel: payload?.machineLabel || payload?.sourceLabel || payload?.sourceHost || "",
       pushedAt: new Date().toISOString(),
     });
   });
   await writeQueue;
 
-  const index = await readProviderIndex(provider);
+  const index = await readProviderIndex(provider, normalizedMachineId);
   return {
     provider,
+    machineId: normalizedMachineId,
     id: detail.id,
     pushedAt: index?.pushedAt || "",
     projectCount: index?.projectCount || 0,
@@ -142,24 +244,36 @@ export async function savePushedSession(provider, payload) {
   };
 }
 
-export async function deletePushedSession(provider, payload) {
+export async function deletePushedSession(
+  provider,
+  payload,
+  machineId = payload?.machineId || getDefaultMachineId(),
+) {
   validateProvider(provider);
+  const normalizedMachineId = normalizeMachineId(machineId);
   const sessionId = payload?.sessionId || payload?.id;
   if (!sessionId) throw new Error("Delete payload must include sessionId");
 
   writeQueue = writeQueue.then(async () => {
-    await rm(summaryPath(provider, sessionId), { force: true });
-    await rm(detailPath(provider, sessionId), { force: true });
-    await rebuildProviderIndex(provider, {
-      sourceHost: payload?.sourceHost || hostname(),
+    await rm(summaryPath(provider, sessionId, normalizedMachineId), { force: true });
+    await rm(detailPath(provider, sessionId, normalizedMachineId), { force: true });
+    await writeMachineMetadata({
+      id: normalizedMachineId,
+      label: payload?.machineLabel || payload?.sourceLabel || payload?.sourceHost || normalizedMachineId,
+      kind: payload?.machineKind || "push",
+    });
+    await rebuildProviderIndex(provider, normalizedMachineId, {
+      sourceHost: payload?.sourceHost || normalizedMachineId,
+      machineLabel: payload?.machineLabel || payload?.sourceLabel || payload?.sourceHost || "",
       pushedAt: new Date().toISOString(),
     });
   });
   await writeQueue;
 
-  const index = await readProviderIndex(provider);
+  const index = await readProviderIndex(provider, normalizedMachineId);
   return {
     provider,
+    machineId: normalizedMachineId,
     id: sessionId,
     pushedAt: index?.pushedAt || "",
     projectCount: index?.projectCount || 0,
@@ -167,14 +281,15 @@ export async function deletePushedSession(provider, payload) {
   };
 }
 
-async function writeSessionShard(provider, detail) {
+async function writeSessionShard(provider, detail, machineId) {
   const summary = summarizeDetail(detail);
-  await writeJson(summaryPath(provider, detail.id), summary);
-  await writeJson(detailPath(provider, detail.id), detail);
+  await writeJson(summaryPath(provider, detail.id, machineId), summary);
+  await writeJson(detailPath(provider, detail.id, machineId), detail);
 }
 
-async function rebuildProviderIndex(provider, metadata = {}) {
-  const summaries = await readProviderSummaries(provider);
+async function rebuildProviderIndex(provider, machineId, metadata = {}) {
+  const normalizedMachineId = normalizeMachineId(machineId);
+  const summaries = await readProviderSummaries(provider, normalizedMachineId);
   const sessionsWithChildren = attachChildren(provider, summaries);
   const rootSessions = sessionsWithChildren.filter((session) => !session.isSubagent);
   const projects = buildProjects(summaries);
@@ -186,6 +301,8 @@ async function rebuildProviderIndex(provider, metadata = {}) {
 
   const index = {
     provider,
+    machineId: normalizedMachineId,
+    machineLabel: normalizeMachineLabel(metadata.machineLabel || normalizedMachineId),
     sourceHost: metadata.sourceHost || "",
     pushedAt: metadata.pushedAt || new Date().toISOString(),
     scannedAt: metadata.pushedAt || new Date().toISOString(),
@@ -196,7 +313,7 @@ async function rebuildProviderIndex(provider, metadata = {}) {
     projects,
     projectSessions,
   };
-  await writeJson(indexPath(provider), index);
+  await writeJson(indexPath(provider, normalizedMachineId), index);
   return index;
 }
 
@@ -369,10 +486,11 @@ function updateVirtualGroupFromChildren(parent) {
   parent.title = `Detached subagents (${parent.childSessions.length})`;
 }
 
-async function ensureProviderMigrated(provider) {
-  const migrationKey = `${provider}:${getSessionDataDir()}`;
+async function ensureProviderMigrated(provider, machineId = getDefaultMachineId()) {
+  const normalizedMachineId = normalizeMachineId(machineId);
+  const migrationKey = `${normalizedMachineId}:${provider}:${getSessionDataDir()}`;
   if (migratedProviders.has(migrationKey)) return;
-  if (await fileExists(indexPath(provider))) {
+  if (await fileExists(indexPath(provider, normalizedMachineId))) {
     migratedProviders.add(migrationKey);
     return;
   }
@@ -383,7 +501,13 @@ async function ensureProviderMigrated(provider) {
     return;
   }
 
-  await savePushedSnapshot(provider, legacy);
+  await savePushedSnapshot(provider, {
+    ...legacy,
+    machineId: normalizedMachineId,
+    machineLabel: normalizedMachineId === getDefaultMachineId()
+      ? getDefaultMachineLabel()
+      : normalizedMachineId,
+  }, normalizedMachineId);
   migratedProviders.add(migrationKey);
 }
 
@@ -398,17 +522,17 @@ async function readLegacyProviderSnapshot(provider) {
   }
 }
 
-async function readProviderIndex(provider) {
+async function readProviderIndex(provider, machineId) {
   try {
-    return JSON.parse(await readFile(indexPath(provider), "utf8"));
+    return JSON.parse(await readFile(indexPath(provider, machineId), "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
 }
 
-async function readProviderSummaries(provider) {
-  const dir = summariesDir(provider);
+async function readProviderSummaries(provider, machineId) {
+  const dir = summariesDir(provider, machineId);
   let names = [];
   try {
     names = await readdir(dir);
@@ -425,17 +549,17 @@ async function readProviderSummaries(provider) {
   return summaries;
 }
 
-async function readSessionDetail(provider, sessionId) {
+async function readSessionDetail(provider, sessionId, machineId) {
   try {
-    return JSON.parse(await readFile(detailPath(provider, sessionId), "utf8"));
+    return JSON.parse(await readFile(detailPath(provider, sessionId, machineId), "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
 }
 
-async function findSessionRow(provider, sessionId) {
-  const index = await readProviderIndex(provider);
+async function findSessionRow(provider, sessionId, machineId) {
+  const index = await readProviderIndex(provider, machineId);
   for (const sessions of Object.values(index?.projectSessions || {})) {
     const found = findSessionInRows(sessions, sessionId);
     if (found) return found;
@@ -544,10 +668,10 @@ function makeSearchResultRow(session) {
   };
 }
 
-async function resetProviderShards(provider) {
-  rmSync(providerDir(provider), { recursive: true, force: true });
-  await mkdir(summariesDir(provider), { recursive: true });
-  await mkdir(detailsDir(provider), { recursive: true });
+async function resetProviderShards(provider, machineId) {
+  rmSync(providerDir(provider, machineId), { recursive: true, force: true });
+  await mkdir(summariesDir(provider, machineId), { recursive: true });
+  await mkdir(detailsDir(provider, machineId), { recursive: true });
 }
 
 async function writeJson(filePath, value) {
@@ -557,7 +681,7 @@ async function writeJson(filePath, value) {
   await rename(tmpPath, filePath);
 }
 
-function normalizeDetail(provider, detail) {
+function normalizeDetail(provider, detail, machineId) {
   if (!detail || typeof detail !== "object") {
     throw new Error("Session payload must include a session object");
   }
@@ -565,6 +689,7 @@ function normalizeDetail(provider, detail) {
   return {
     ...detail,
     provider,
+    machineId,
     childSessions: [],
     childSessionCount: 0,
   };
@@ -582,7 +707,7 @@ function summarizeDetail(detail) {
   };
 }
 
-function sanitizeIndex(provider, index) {
+function sanitizeIndex(provider, index, machineId) {
   const {
     sessionById: _sessionById,
     sessions: _sessions,
@@ -597,6 +722,8 @@ function sanitizeIndex(provider, index) {
   return {
     ...rest,
     provider,
+    machineId,
+    machineLabel: rest.machineLabel || machineId,
     scannedAt: rest.scannedAt || rest.pushedAt || new Date().toISOString(),
     projectCount: rest.projectCount || rest.projects?.length || 0,
     sessionCount: rest.sessionCount || 0,
@@ -606,9 +733,11 @@ function sanitizeIndex(provider, index) {
   };
 }
 
-function makeEmptyIndex(provider) {
+function makeEmptyIndex(provider, machineId = getDefaultMachineId()) {
   return {
     provider,
+    machineId,
+    machineLabel: machineId,
     scannedAt: "",
     projectCount: 0,
     sessionCount: 0,
@@ -636,32 +765,81 @@ function validateProvider(provider) {
   }
 }
 
-function providerDir(provider) {
-  return path.join(getSessionDataDir(), "providers", provider);
+function machinesDir() {
+  return path.join(getSessionDataDir(), "machines");
 }
 
-function summariesDir(provider) {
-  return path.join(providerDir(provider), "summaries");
+function machineDir(machineId) {
+  return path.join(machinesDir(), normalizeMachineId(machineId));
 }
 
-function detailsDir(provider) {
-  return path.join(providerDir(provider), "sessions");
+function machineMetadataPath(machineId) {
+  return path.join(machineDir(machineId), "machine.json");
 }
 
-function indexPath(provider) {
-  return path.join(providerDir(provider), "index.json");
+function providerDir(provider, machineId) {
+  return path.join(machineDir(machineId), "providers", provider);
 }
 
-function summaryPath(provider, sessionId) {
-  return path.join(summariesDir(provider), `${safeFileName(sessionId)}.json`);
+function summariesDir(provider, machineId) {
+  return path.join(providerDir(provider, machineId), "summaries");
 }
 
-function detailPath(provider, sessionId) {
-  return path.join(detailsDir(provider), `${safeFileName(sessionId)}.json`);
+function detailsDir(provider, machineId) {
+  return path.join(providerDir(provider, machineId), "sessions");
+}
+
+function indexPath(provider, machineId) {
+  return path.join(providerDir(provider, machineId), "index.json");
+}
+
+function summaryPath(provider, sessionId, machineId) {
+  return path.join(summariesDir(provider, machineId), `${safeFileName(sessionId)}.json`);
+}
+
+function detailPath(provider, sessionId, machineId) {
+  return path.join(detailsDir(provider, machineId), `${safeFileName(sessionId)}.json`);
 }
 
 function safeFileName(value) {
   return String(value).replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function normalizeMachineId(value) {
+  const machineId = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(machineId)) {
+    throw new Error("Machine id must use 1-64 lowercase letters, numbers, dots, underscores, or dashes");
+  }
+  return machineId;
+}
+
+function normalizeMachineLabel(value) {
+  return String(value || "").trim().slice(0, 80) || DEFAULT_MACHINE_LABEL;
+}
+
+async function readMachineMetadata(machineId) {
+  try {
+    const parsed = JSON.parse(await readFile(machineMetadataPath(machineId), "utf8"));
+    return {
+      id: normalizeMachineId(parsed.id || machineId),
+      label: normalizeMachineLabel(parsed.label || parsed.id || machineId),
+      kind: parsed.kind || "remote",
+      updatedAt: parsed.updatedAt || "",
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function writeMachineMetadata(machine) {
+  const id = normalizeMachineId(machine.id);
+  await writeJson(machineMetadataPath(id), {
+    id,
+    label: normalizeMachineLabel(machine.label || id),
+    kind: machine.kind || "remote",
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 async function fileExists(filePath) {

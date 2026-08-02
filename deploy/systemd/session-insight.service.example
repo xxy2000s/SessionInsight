@@ -7,9 +7,12 @@ Type=simple
 WorkingDirectory=/opt/session-insight
 Environment=NODE_ENV=production
 Environment=APP_MODE=production
+Environment=SESSION_SOURCE=hybrid-index
 Environment=HOST=127.0.0.1
 Environment=PORT=5173
 Environment=SESSION_DATA_DIR=/var/lib/session-insight
+Environment=SESSION_LOCAL_MACHINE_ID=server
+Environment=SESSION_LOCAL_MACHINE_LABEL=Server
 Environment=CLAUDE_HOME=/home/agent/.claude
 Environment=CODEX_HOME=/home/agent/.codex
 Environment=DOUJIE_HOME=/home/agent/.doujie

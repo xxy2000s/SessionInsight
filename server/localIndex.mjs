@@ -1,5 +1,4 @@
 import { readdir, stat } from "node:fs/promises";
-import { hostname } from "node:os";
 import path from "node:path";
 import { getClaudeHome, parseSessionFile } from "./claudeSessions.mjs";
 import {
@@ -10,6 +9,8 @@ import {
 } from "./codexSessions.mjs";
 import {
   deletePushedSession,
+  getDefaultMachineId,
+  getDefaultMachineLabel,
   getPushedManifest,
   savePushedSession,
 } from "./sessionStore.mjs";
@@ -66,6 +67,13 @@ export function clearLocalIndexCache(provider) {
   }
 }
 
+export function getLocalMachine() {
+  return {
+    id: getDefaultMachineId(),
+    label: getDefaultMachineLabel(),
+  };
+}
+
 export async function ensureLocalProviderIndex(provider, options = {}) {
   const config = getLocalProviderConfig(provider);
   if (!config) return null;
@@ -112,20 +120,26 @@ export async function syncLocalProviderPath(provider, changedPath, eventType = "
   const detail = await parseLocalSessionDetail(provider, changedPath, config);
   if (!detail) return null;
   return savePushedSession(provider, {
-    sourceHost: hostname(),
+    sourceHost: getDefaultMachineId(),
+    machineId: getDefaultMachineId(),
+    machineLabel: getDefaultMachineLabel(),
+    machineKind: "local",
     session: detail,
-  });
+  }, getDefaultMachineId());
 }
 
 export async function deleteLocalProviderPath(provider, filePath) {
   clearLocalIndexCache(provider);
-  const manifest = await getPushedManifest(provider);
+  const manifest = await getPushedManifest(provider, getDefaultMachineId());
   const match = manifest.sessions.find((session) => session.filePath === filePath);
   if (!match) return { provider, id: "", deleted: false };
   const result = await deletePushedSession(provider, {
-    sourceHost: hostname(),
+    sourceHost: getDefaultMachineId(),
+    machineId: getDefaultMachineId(),
+    machineLabel: getDefaultMachineLabel(),
+    machineKind: "local",
     sessionId: match.id,
-  });
+  }, getDefaultMachineId());
   return { ...result, deleted: true };
 }
 
@@ -141,7 +155,7 @@ async function reconcileLocalProvider(provider, config) {
     });
   }
 
-  const manifest = await getPushedManifest(provider);
+  const manifest = await getPushedManifest(provider, getDefaultMachineId());
   const remoteByPath = new Map(
     manifest.sessions
       .filter((session) => session.filePath)
@@ -163,18 +177,24 @@ async function reconcileLocalProvider(provider, config) {
     const detail = await parseLocalSessionDetail(provider, local.filePath, config);
     if (!detail) continue;
     await savePushedSession(provider, {
-      sourceHost: hostname(),
+      sourceHost: getDefaultMachineId(),
+      machineId: getDefaultMachineId(),
+      machineLabel: getDefaultMachineLabel(),
+      machineKind: "local",
       session: detail,
-    });
+    }, getDefaultMachineId());
     upserted += 1;
   }
 
   for (const remote of remoteByPath.values()) {
     if (localByPath.has(remote.filePath)) continue;
     await deletePushedSession(provider, {
-      sourceHost: hostname(),
+      sourceHost: getDefaultMachineId(),
+      machineId: getDefaultMachineId(),
+      machineLabel: getDefaultMachineLabel(),
+      machineKind: "local",
       sessionId: remote.id,
-    });
+    }, getDefaultMachineId());
     deleted += 1;
   }
 

@@ -62,6 +62,8 @@ const markdownComponents = {
 };
 
 function App() {
+  const [machines, setMachines] = useState([]);
+  const [machineId, setMachineId] = useState("server");
   const [provider, setProvider] = useState("codex");
   const [index, setIndex] = useState(null);
   const [selectedProjectId, setSelectedProjectId] = useState("");
@@ -76,6 +78,7 @@ function App() {
   const [isLive, setIsLive] = useState(true);
   const [showWorkspace, setShowWorkspace] = useState(false);
   const providerRef = useRef(provider);
+  const machineIdRef = useRef(machineId);
   const selectedProjectIdRef = useRef(selectedProjectId);
   const selectedSessionRef = useRef(selectedSession);
   const projectRequestRef = useRef(0);
@@ -87,14 +90,37 @@ function App() {
   const liveRefreshPendingRef = useRef(false);
   const providerLabel =
     SESSION_PROVIDERS.find((item) => item.id === provider)?.label || provider;
+  const machineLabel =
+    machines.find((item) => item.id === machineId)?.label || machineId || "Server";
 
   useEffect(() => {
-    document.title = `${providerLabel} Session Browser`;
-  }, [providerLabel]);
+    document.title = `${machineLabel} · ${providerLabel} Session Browser`;
+  }, [machineLabel, providerLabel]);
 
   useEffect(() => {
     providerRef.current = provider;
   }, [provider]);
+
+  useEffect(() => {
+    machineIdRef.current = machineId;
+  }, [machineId]);
+
+  const loadMachines = useCallback(async () => {
+    try {
+      const data = await fetchJson(apiPath("/api/machines"));
+      const nextMachines = data.machines?.length
+        ? data.machines
+        : [{ id: "server", label: "Server" }];
+      setMachines(nextMachines);
+      setMachineId((current) =>
+        nextMachines.some((machine) => machine.id === current)
+          ? current
+          : nextMachines[0].id,
+      );
+    } catch (err) {
+      setError(err.message);
+    }
+  }, []);
 
   useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
@@ -106,6 +132,7 @@ function App() {
 
   const loadProjects = useCallback(async (force = false, quiet = false) => {
     const requestProvider = provider;
+    const requestMachineId = machineId;
     const requestId = ++projectRequestRef.current;
     if (!quiet) {
       setLoading(true);
@@ -115,12 +142,13 @@ function App() {
       const data = await fetchJson(
         apiPath(
           force
-            ? `/api/providers/${provider}/rescan`
-            : `/api/providers/${provider}/projects`,
+            ? machineProviderPath(machineId, provider, "/rescan")
+            : machineProviderPath(machineId, provider, "/projects"),
         ),
       );
       if (
         requestId !== projectRequestRef.current ||
+        machineIdRef.current !== requestMachineId ||
         providerRef.current !== requestProvider
       ) {
         return;
@@ -136,6 +164,7 @@ function App() {
     } catch (err) {
       if (
         requestId === projectRequestRef.current &&
+        machineIdRef.current === requestMachineId &&
         providerRef.current === requestProvider
       ) {
         setError(err.message);
@@ -144,25 +173,30 @@ function App() {
       if (
         !quiet &&
         requestId === projectRequestRef.current &&
+        machineIdRef.current === requestMachineId &&
         providerRef.current === requestProvider
       ) {
         setLoading(false);
       }
     }
-  }, [provider]);
+  }, [machineId, provider]);
 
   const loadProjectSessions = useCallback(
     async (projectId, quiet = false) => {
       if (!projectId) return;
       const requestProvider = provider;
+      const requestMachineId = machineId;
       const requestId = ++sessionsRequestRef.current;
       if (!quiet) setError("");
       try {
         const data = await fetchJson(
-          apiPath(`/api/providers/${provider}/projects/${projectId}/sessions`),
+          apiPath(
+            `/api/machines/${encodeURIComponent(machineId)}/providers/${provider}/projects/${projectId}/sessions`,
+          ),
         );
         if (
           requestId !== sessionsRequestRef.current ||
+          machineIdRef.current !== requestMachineId ||
           providerRef.current !== requestProvider ||
           selectedProjectIdRef.current !== projectId
         ) {
@@ -172,23 +206,26 @@ function App() {
       } catch (err) {
         if (
           requestId === sessionsRequestRef.current &&
+          machineIdRef.current === requestMachineId &&
           providerRef.current === requestProvider
         ) {
           setError(err.message);
         }
       }
     },
-    [provider],
+    [machineId, provider],
   );
 
   const openSession = useCallback(
     async (sessionId) => {
       const requestProvider = provider;
+      const requestMachineId = machineId;
       const requestId = ++sessionRequestRef.current;
       setError("");
-      const data = await fetchJson(sessionDetailUrl(provider, sessionId));
+      const data = await fetchJson(sessionDetailUrl(machineId, provider, sessionId));
       if (
         requestId !== sessionRequestRef.current ||
+        machineIdRef.current !== requestMachineId ||
         providerRef.current !== requestProvider
       ) {
         return;
@@ -202,18 +239,25 @@ function App() {
       selectedSessionRef.current = data.session;
       setSelectedSession(data.session);
     },
-    [provider],
+    [machineId, provider],
   );
 
   const loadFullSession = useCallback(async (sessionId) => {
     const currentProvider = providerRef.current;
+    const currentMachineId = machineIdRef.current;
     setError("");
-    const data = await fetchJson(sessionDetailUrl(currentProvider, sessionId, true));
-    if (providerRef.current !== currentProvider) {
+    const data = await fetchJson(
+      sessionDetailUrl(currentMachineId, currentProvider, sessionId, true),
+    );
+    if (providerRef.current !== currentProvider || machineIdRef.current !== currentMachineId) {
       return;
     }
     setSelectedSession((current) => (current?.id === sessionId ? data.session : current));
   }, []);
+
+  useEffect(() => {
+    loadMachines();
+  }, [loadMachines]);
 
   useEffect(() => {
     loadProjects();
@@ -231,6 +275,7 @@ function App() {
   useEffect(() => {
     const query = sessionQuery.trim();
     const requestProvider = provider;
+    const requestMachineId = machineId;
     const requestId = ++sessionSearchRequestRef.current;
 
     if (!query) {
@@ -244,11 +289,12 @@ function App() {
       try {
         const data = await fetchJson(
           apiPath(
-            `/api/providers/${requestProvider}/sessions/search?q=${encodeURIComponent(query)}&limit=80`,
+            `/api/machines/${encodeURIComponent(requestMachineId)}/providers/${requestProvider}/sessions/search?q=${encodeURIComponent(query)}&limit=80`,
           ),
         );
         if (
           requestId !== sessionSearchRequestRef.current ||
+          machineIdRef.current !== requestMachineId ||
           providerRef.current !== requestProvider
         ) {
           return;
@@ -257,6 +303,7 @@ function App() {
       } catch (err) {
         if (
           requestId === sessionSearchRequestRef.current &&
+          machineIdRef.current === requestMachineId &&
           providerRef.current === requestProvider
         ) {
           setError(err.message);
@@ -265,6 +312,7 @@ function App() {
       } finally {
         if (
           requestId === sessionSearchRequestRef.current &&
+          machineIdRef.current === requestMachineId &&
           providerRef.current === requestProvider
         ) {
           setSessionSearchLoading(false);
@@ -273,7 +321,7 @@ function App() {
     }, 180);
 
     return () => clearTimeout(timer);
-  }, [provider, sessionQuery]);
+  }, [machineId, provider, sessionQuery]);
 
   const refreshLive = useCallback(() => {
     liveRefreshPendingRef.current = true;
@@ -286,16 +334,21 @@ function App() {
       try {
         while (liveRefreshPendingRef.current) {
           liveRefreshPendingRef.current = false;
+          const currentMachineId = machineIdRef.current;
           const currentProvider = providerRef.current;
           const currentProjectId = selectedProjectIdRef.current;
           const currentSession = selectedSessionRef.current;
 
           await loadProjects(false, true);
-          if (providerRef.current !== currentProvider) continue;
+          if (
+            machineIdRef.current !== currentMachineId ||
+            providerRef.current !== currentProvider
+          ) continue;
           if (currentProjectId) {
             await loadProjectSessions(currentProjectId, true);
           }
           if (
+            machineIdRef.current === currentMachineId &&
             providerRef.current === currentProvider &&
             currentSession?.id &&
             !currentSession.isVirtual
@@ -304,6 +357,7 @@ function App() {
             try {
               const data = await fetchJson(
                 sessionDetailUrl(
+                  currentMachineId,
                   currentProvider,
                   currentSession.id,
                   currentSession.hiddenEventsOmitted === false,
@@ -311,6 +365,7 @@ function App() {
               );
               if (
                 requestId !== sessionRequestRef.current ||
+                machineIdRef.current !== currentMachineId ||
                 providerRef.current !== currentProvider
               ) {
                 continue;
@@ -321,6 +376,7 @@ function App() {
             } catch (err) {
               if (
                 requestId === sessionRequestRef.current &&
+                machineIdRef.current === currentMachineId &&
                 providerRef.current === currentProvider
               ) {
                 setError(err.message);
@@ -338,7 +394,11 @@ function App() {
     if (!isLive) return undefined;
 
     let fallbackTimer = null;
-    const source = new EventSource(apiPath(`/api/events?provider=${provider}`));
+    const source = new EventSource(
+      apiPath(
+        `/api/events?machine=${encodeURIComponent(machineId)}&provider=${provider}`,
+      ),
+    );
     const startFallback = () => {
       if (!fallbackTimer) fallbackTimer = setInterval(refreshLive, 5_000);
     };
@@ -371,7 +431,7 @@ function App() {
       }
       liveRefreshPendingRef.current = false;
     };
-  }, [isLive, provider, refreshLive]);
+  }, [isLive, machineId, provider, refreshLive]);
 
   const rescan = useCallback(async () => {
     await loadProjects(true);
@@ -388,34 +448,48 @@ function App() {
     setShowWorkspace(false);
   }, []);
 
+  const resetSelectionForScopeChange = useCallback(() => {
+    projectRequestRef.current += 1;
+    sessionsRequestRef.current += 1;
+    sessionRequestRef.current += 1;
+    sessionSearchRequestRef.current += 1;
+    if (liveRefreshTimerRef.current) {
+      clearTimeout(liveRefreshTimerRef.current);
+      liveRefreshTimerRef.current = null;
+    }
+    liveRefreshPendingRef.current = false;
+    setIndex(null);
+    setSessions([]);
+    selectedProjectIdRef.current = "";
+    selectedSessionRef.current = null;
+    setSelectedProjectId("");
+    setSelectedSession(null);
+    setProjectQuery("");
+    setSessionQuery("");
+    setSearchedSessions([]);
+    setSessionSearchLoading(false);
+    setLoading(true);
+    setError("");
+  }, []);
+
+  const selectMachine = useCallback(
+    (nextMachineId) => {
+      if (nextMachineId === machineId) return;
+      machineIdRef.current = nextMachineId;
+      setMachineId(nextMachineId);
+      resetSelectionForScopeChange();
+    },
+    [machineId, resetSelectionForScopeChange],
+  );
+
   const selectProvider = useCallback(
     (nextProvider) => {
       if (nextProvider === provider) return;
       providerRef.current = nextProvider;
-      projectRequestRef.current += 1;
-      sessionsRequestRef.current += 1;
-      sessionRequestRef.current += 1;
-      sessionSearchRequestRef.current += 1;
-      if (liveRefreshTimerRef.current) {
-        clearTimeout(liveRefreshTimerRef.current);
-        liveRefreshTimerRef.current = null;
-      }
-      liveRefreshPendingRef.current = false;
       setProvider(nextProvider);
-      setIndex(null);
-      setSessions([]);
-      selectedProjectIdRef.current = "";
-      selectedSessionRef.current = null;
-      setSelectedProjectId("");
-      setSelectedSession(null);
-      setProjectQuery("");
-      setSessionQuery("");
-      setSearchedSessions([]);
-      setSessionSearchLoading(false);
-      setLoading(true);
-      setError("");
+      resetSelectionForScopeChange();
     },
-    [provider],
+    [provider, resetSelectionForScopeChange],
   );
 
   const projects = useMemo(() => {
@@ -437,7 +511,11 @@ function App() {
         className="sidebar"
         index={index}
         isLive={isLive}
+        machineId={machineId}
+        machineLabel={machineLabel}
+        machines={machines}
         onClose={() => setShowWorkspace(false)}
+        onMachineSelect={selectMachine}
         onProjectSelect={selectProject}
         onRescan={rescan}
         onToggleLive={() => setIsLive((current) => !current)}
@@ -456,7 +534,11 @@ function App() {
             className="workspace-drawer"
             index={index}
             isLive={isLive}
+            machineId={machineId}
+            machineLabel={machineLabel}
+            machines={machines}
             onClose={() => setShowWorkspace(false)}
+            onMachineSelect={selectMachine}
             onProjectSelect={selectProject}
             onRescan={rescan}
             onToggleLive={() => setIsLive((current) => !current)}
@@ -487,8 +569,8 @@ function App() {
             </strong>
             <span title={selectedSession?.cwd || selectedSession?.projectPath || ""}>
               {selectedSession
-                ? `${providerLabel} · ${selectedSession.projectPath || selectedSession.cwd || "Session"}`
-                : `${providerLabel} Sessions`}
+                ? `${machineLabel} · ${providerLabel} · ${selectedSession.projectPath || selectedSession.cwd || "Session"}`
+                : `${machineLabel} · ${providerLabel} Sessions`}
             </span>
           </div>
           {selectedSession ? (
@@ -533,7 +615,11 @@ function WorkspacePanel({
   className,
   index,
   isLive,
+  machineId,
+  machineLabel,
+  machines,
   onClose,
+  onMachineSelect,
   onProjectSelect,
   onRescan,
   onToggleLive,
@@ -562,7 +648,7 @@ function WorkspacePanel({
           <h1>{providerLabel} Sessions</h1>
           <p>
             {index
-              ? `${index.mainSessionCount} main · ${index.subagentSessionCount} subagents`
+              ? `${machineLabel} · ${index.mainSessionCount} main · ${index.subagentSessionCount} subagents`
               : "Loading"}
           </p>
         </div>
@@ -587,6 +673,19 @@ function WorkspacePanel({
             <X size={18} />
           </button>
         </div>
+      </div>
+
+      <div className="machine-switch" aria-label="Machine">
+        {machines.map((machine) => (
+          <button
+            className={machineId === machine.id ? "is-selected" : ""}
+            key={machine.id}
+            onClick={() => onMachineSelect(machine.id)}
+            title={machine.label}
+          >
+            {machine.label}
+          </button>
+        ))}
       </div>
 
       <div className="provider-switch" aria-label="Session source">
@@ -1578,9 +1677,15 @@ function apiPath(path) {
   return `${BASE_PATH}${path}`;
 }
 
-function sessionDetailUrl(provider, sessionId, includeHiddenEvents = false) {
+function machineProviderPath(machineId, provider, suffix) {
+  return `/api/machines/${encodeURIComponent(machineId)}/providers/${provider}${suffix}`;
+}
+
+function sessionDetailUrl(machineId, provider, sessionId, includeHiddenEvents = false) {
   const params = includeHiddenEvents ? "?includeHiddenEvents=1" : "";
-  return apiPath(`/api/providers/${provider}/sessions/${sessionId}${params}`);
+  return apiPath(
+    `/api/machines/${encodeURIComponent(machineId)}/providers/${provider}/sessions/${sessionId}${params}`,
+  );
 }
 
 function mergeLiveSessionDetail(current, sessionId, nextSession) {

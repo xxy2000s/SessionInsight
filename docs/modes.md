@@ -57,10 +57,12 @@ APP_MODE=remote -> production
 
 `SESSION_SOURCE=local-index` is the default data source mode.
 
-It scans session files on the machine running the Node process and writes them into a persistent sharded index/cache.
+It scans session files on the machine running the Node process and writes them into a persistent sharded index/cache under the local machine tab.
 
 ```text
 SESSION_SOURCE=local-index
+SESSION_LOCAL_MACHINE_ID=server
+SESSION_LOCAL_MACHINE_LABEL=Server
 SESSION_DATA_DIR=./data                   # dev default
 SESSION_DATA_DIR=/var/lib/session-insight # production recommendation
 ```
@@ -75,6 +77,39 @@ Default scanned paths:
 
 This has the same data behavior on a laptop and on a server: it reads the current machine's session files.
 
+### Push Index
+
+`SESSION_SOURCE=push-index` serves only machine data pushed over HTTPS.
+
+The server requires:
+
+```text
+SESSION_PUSH_TOKENS=macbook:<long random token>
+```
+
+Mac-side pusher example:
+
+```bash
+SESSION_PUSH_URL=https://your-domain.example \
+SESSION_PUSH_TOKEN=... \
+SESSION_PUSH_MACHINE_ID=macbook \
+SESSION_PUSH_MACHINE_LABEL="MacBook" \
+npm run push -- --once
+```
+
+### Hybrid Index
+
+`SESSION_SOURCE=hybrid-index` combines:
+
+```text
+server-local session scanning
+outbound pushed machine data
+```
+
+The UI shows each machine as a top-level tab. Each machine keeps its own provider/project/session tree, so identical session ids or project paths on different machines do not collide.
+
+Push tokens are bound to machine ids. A token configured for `macbook` cannot write to the `server` machine or another pushed machine.
+
 ### Local Scan Debug Mode
 
 `SESSION_SOURCE=local-scan` bypasses the persistent sharded cache and directly scans files on request.
@@ -84,26 +119,6 @@ npm run dev:scan
 ```
 
 Use it only when debugging parsers.
-
-### Future Linked / Push Mode
-
-A future linked data mode should be separate from `APP_MODE`.
-
-Potential shape:
-
-```text
-APP_MODE=production
-SESSION_SOURCE=hybrid-index
-```
-
-That mode would combine:
-
-```text
-server-local session scanning
-Mac-side outbound session push
-```
-
-The current open-source version does not yet implement push ingestion.
 
 ## Path Overrides
 

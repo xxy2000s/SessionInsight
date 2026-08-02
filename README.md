@@ -7,8 +7,10 @@ It currently supports:
 - Claude sessions from `~/.claude/projects`
 - Codex sessions from `~/.codex/sessions`
 - Doujie-linked Codex sessions from `~/.doujie/sessions/links`
+- Machine tabs for isolating server-local sessions from pushed laptop sessions
 - Project grouping, session search, subagent relationships, timeline rendering, Markdown output, and folded tool/system events
 - File-change based live refresh through local filesystem watchers and SSE
+- Optional outbound session push from another machine without exposing that machine to inbound traffic
 
 ## Modes
 
@@ -23,6 +25,8 @@ Data source mode:
 
 - `SESSION_SOURCE=local-index`: default; scan session files on the machine running the Node process and store them in the local sharded index/cache.
 - `SESSION_SOURCE=local-scan`: parser-debug mode that scans directly on request.
+- `SESSION_SOURCE=hybrid-index`: scan the server-local machine and also accept pushed machine data.
+- `SESSION_SOURCE=push-index`: accept pushed machine data without server-local scanning.
 
 Legacy `APP_MODE=local` and `APP_MODE=remote` values are still accepted as aliases for `dev` and `production`.
 
@@ -55,7 +59,9 @@ npm run build
 
 NODE_ENV=production \
 APP_MODE=production \
+SESSION_SOURCE=hybrid-index \
 SESSION_ACCESS_TOKEN="<long-random-browser-token>" \
+SESSION_PUSH_TOKENS="macbook:<different-long-random-push-token>" \
 SESSION_DATA_DIR=/var/lib/session-insight \
 HOST=127.0.0.1 \
 PORT=5173 \
@@ -73,6 +79,20 @@ The server sets an HttpOnly cookie and redirects to `/`.
 For real deployment notes, including `BASE_PATH`, Caddy examples, Docker bridge networking, reverse proxy auth, and Rollup/glibc build compatibility, see [docs/deployment.md](docs/deployment.md).
 
 Chinese deployment notes are available at [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md).
+
+## Outbound Push
+
+To show laptop sessions on a remote server without opening inbound laptop ports, run the web service in `SESSION_SOURCE=hybrid-index` and run the pusher on the laptop:
+
+```bash
+SESSION_PUSH_URL=https://your-domain.example \
+SESSION_PUSH_TOKEN="<server-push-token>" \
+SESSION_PUSH_MACHINE_ID=macbook \
+SESSION_PUSH_MACHINE_LABEL="MacBook" \
+npm run push -- --once
+```
+
+Omit `--once` to keep watching local session files and pushing incremental changes.
 
 ## Session Paths
 
@@ -115,6 +135,8 @@ npm run dev:scan
 ## Security Notes
 
 - Do not expose the service without `SESSION_ACCESS_TOKEN` in production.
+- Do not reuse `SESSION_ACCESS_TOKEN` as a push token.
+- Bind push tokens to machine ids with `SESSION_PUSH_TOKENS=macbook:<token>`.
 - Prefer `HOST=127.0.0.1` behind HTTPS reverse proxy.
 - Do not commit `.env*`, `data/`, `dist/`, `node_modules/`, or real session files.
 - Session histories may contain secrets, commands, file paths, source snippets, API output, and private reasoning/tool data.
