@@ -154,12 +154,13 @@ Generate the Caddy password hash on the server:
 caddy hash-password --plaintext '<your-password>'
 ```
 
-If Caddy is run by Docker Compose and the hash is stored in a `.env` file, escape every `$` as `$$`. Otherwise Docker Compose may treat parts of the bcrypt hash as environment variables and corrupt it.
+Some Caddy 2.10 Docker images still print a raw bcrypt string such as `$2a$...`, while `basic_auth` loads the configured password as base64. If your `caddy hash-password` output contains `$`, base64-encode the hash before storing it in the Compose `.env` file. This also avoids Docker Compose `$...` interpolation.
 
 Example:
 
-```text
-SESSION_INSIGHT_PASSWORD_HASH=$$2a$$14$$...
+```bash
+BCRYPT_HASH="$(docker run --rm caddy:2.10.2-alpine caddy hash-password --plaintext '<your-password>')"
+SESSION_INSIGHT_PASSWORD_HASH="$(printf '%s' "$BCRYPT_HASH" | base64 | tr -d '\n')"
 ```
 
 Do not commit the token, password, password hash, or real deployment domain.

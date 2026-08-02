@@ -5,12 +5,15 @@ Use a clean repository or an orphan branch for the first public release. Do not 
 ## Files That Must Not Be Published
 
 ```text
-.env*
+.env
+.env.*
 data/
 dist/
 node_modules/
 .playwright-cli/
 ```
+
+`.env.example` is allowed in the public release because it contains placeholders only.
 
 Do not publish real:
 
@@ -40,4 +43,3 @@ git commit -m "initial public release"
 ```
 
 rather than pushing the old private Git history.
-

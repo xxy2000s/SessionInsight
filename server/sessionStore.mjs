@@ -805,7 +805,7 @@ function safeFileName(value) {
   return String(value).replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function normalizeMachineId(value) {
+export function normalizeMachineId(value) {
   const machineId = String(value || "").trim().toLowerCase();
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(machineId)) {
     throw new Error("Machine id must use 1-64 lowercase letters, numbers, dots, underscores, or dashes");

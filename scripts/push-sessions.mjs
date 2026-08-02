@@ -21,6 +21,7 @@ const minPushIntervalMs = Number(process.env.SESSION_PUSH_MIN_INTERVAL_MS || 800
 const allowEmptyDelete = process.env.SESSION_PUSH_ALLOW_EMPTY_DELETE === "1";
 const allowLargeDelete = process.env.SESSION_PUSH_ALLOW_LARGE_DELETE === "1";
 const maxDeleteRatio = Number(process.env.SESSION_PUSH_MAX_DELETE_RATIO || 0.5);
+const verboseErrors = process.env.SESSION_PUSH_VERBOSE_ERRORS === "1";
 const once = process.argv.includes("--once");
 const activeProviders = new Set();
 const pendingSync = new Map();
@@ -408,5 +409,16 @@ function formatBytes(bytes) {
 }
 
 function logError(error) {
-  console.error(`[${new Date().toISOString()}] ${error.stack || error.message}`);
+  const message = verboseErrors ? error.stack || error.message : sanitizeErrorMessage(error);
+  console.error(`[${new Date().toISOString()}] ${message}`);
+}
+
+function sanitizeErrorMessage(error) {
+  const name = error?.name && error.name !== "Error" ? `${error.name}: ` : "";
+  const rawMessage = String(error?.message || error || "Unknown push error");
+  const message = rawMessage
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+=*/gi, "Bearer <redacted>")
+    .replace(/(SESSION_PUSH_TOKEN=)[^\s]+/g, "$1<redacted>")
+    .replace(/([A-Za-z]:)?\/[^\s:]+/g, "<path>");
+  return `${name}${message}`;
 }

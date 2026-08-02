@@ -40,6 +40,7 @@ import {
   getPushedSessionDetail,
   isLocalIndexSourceMode,
   isShardedSourceMode,
+  normalizeMachineId,
   savePushedSession,
   savePushedSnapshot,
   searchPushedSessions,
@@ -547,34 +548,40 @@ async function rescanMachineProvider(machineId, provider) {
 }
 
 async function handlePushManifest(machineId, provider, req, res) {
+  const normalizedMachineId = normalizeMachineId(machineId);
   if (req.method !== "GET") {
     sendJson(res, 405, { error: "Method not allowed" });
     return;
   }
-  if (!isPushAuthorized(req, machineId)) {
+  if (!isPushAuthorized(req, normalizedMachineId)) {
     sendJson(res, 401, { error: "Unauthorized" });
     return;
   }
   try {
-    sendJson(res, 200, await getPushedManifest(provider, machineId));
+    sendJson(res, 200, await getPushedManifest(provider, normalizedMachineId));
   } catch (error) {
     sendJson(res, 400, { error: error.message });
   }
 }
 
 async function handlePushSession(machineId, provider, req, res) {
+  const normalizedMachineId = normalizeMachineId(machineId);
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed" });
     return;
   }
-  if (!isPushAuthorized(req, machineId)) {
+  if (!isPushAuthorized(req, normalizedMachineId)) {
     sendJson(res, 401, { error: "Unauthorized" });
     return;
   }
   try {
     const payload = await readRequestJson(req, maxPushBytes);
-    const result = await savePushedSession(provider, { ...payload, machineId }, machineId);
-    sendPushChange(machineId, provider, result.pushedAt, "push-session", result.id);
+    const result = await savePushedSession(
+      provider,
+      { ...payload, machineId: normalizedMachineId },
+      normalizedMachineId,
+    );
+    sendPushChange(normalizedMachineId, provider, result.pushedAt, "push-session", result.id);
     sendJson(res, 200, { ok: true, ...result });
   } catch (error) {
     sendJson(res, 400, { error: error.message });
@@ -582,18 +589,23 @@ async function handlePushSession(machineId, provider, req, res) {
 }
 
 async function handlePushDelete(machineId, provider, req, res) {
+  const normalizedMachineId = normalizeMachineId(machineId);
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed" });
     return;
   }
-  if (!isPushAuthorized(req, machineId)) {
+  if (!isPushAuthorized(req, normalizedMachineId)) {
     sendJson(res, 401, { error: "Unauthorized" });
     return;
   }
   try {
     const payload = await readRequestJson(req, maxPushBytes);
-    const result = await deletePushedSession(provider, { ...payload, machineId }, machineId);
-    sendPushChange(machineId, provider, result.pushedAt, "push-delete", result.id);
+    const result = await deletePushedSession(
+      provider,
+      { ...payload, machineId: normalizedMachineId },
+      normalizedMachineId,
+    );
+    sendPushChange(normalizedMachineId, provider, result.pushedAt, "push-delete", result.id);
     sendJson(res, 200, { ok: true, ...result });
   } catch (error) {
     sendJson(res, 400, { error: error.message });
@@ -601,11 +613,12 @@ async function handlePushDelete(machineId, provider, req, res) {
 }
 
 async function handlePushSnapshot(machineId, provider, req, res) {
+  const normalizedMachineId = normalizeMachineId(machineId);
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed" });
     return;
   }
-  if (!isPushAuthorized(req, machineId)) {
+  if (!isPushAuthorized(req, normalizedMachineId)) {
     sendJson(res, 401, { error: "Unauthorized" });
     return;
   }
@@ -619,8 +632,12 @@ async function handlePushSnapshot(machineId, provider, req, res) {
       sendJson(res, 400, { error: "Empty snapshot requires allowEmptySnapshot=true" });
       return;
     }
-    const result = await savePushedSnapshot(provider, { ...payload, machineId }, machineId);
-    sendPushChange(machineId, provider, result.pushedAt, "push-snapshot", "snapshot");
+    const result = await savePushedSnapshot(
+      provider,
+      { ...payload, machineId: normalizedMachineId },
+      normalizedMachineId,
+    );
+    sendPushChange(normalizedMachineId, provider, result.pushedAt, "push-snapshot", "snapshot");
     sendJson(res, 200, { ok: true, ...result });
   } catch (error) {
     sendJson(res, 400, { error: error.message });
@@ -636,7 +653,7 @@ function clearProviderCache(provider) {
 
 function handleEvents(url, req, res) {
   const provider = url.searchParams.get("provider") || "all";
-  const machineId = url.searchParams.get("machine") || getDefaultMachineId();
+  const machineId = normalizeMachineId(url.searchParams.get("machine") || getDefaultMachineId());
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-store",
@@ -896,14 +913,19 @@ function isPushAuthorized(req, machineId) {
 }
 
 function getPushTokenForMachine(machineId) {
-  if (machineId === getDefaultMachineId() && process.env.SESSION_PUSH_ALLOW_DEFAULT_MACHINE !== "1") {
+  const normalizedMachineId = normalizeMachineId(machineId);
+  const defaultMachineId = normalizeMachineId(getDefaultMachineId());
+  if (
+    normalizedMachineId === defaultMachineId &&
+    process.env.SESSION_PUSH_ALLOW_DEFAULT_MACHINE !== "1"
+  ) {
     return "";
   }
   const tokens = parseMachineTokenMap(process.env.SESSION_PUSH_TOKENS || "");
-  if (tokens.has(machineId)) return tokens.get(machineId);
+  if (tokens.has(normalizedMachineId)) return tokens.get(normalizedMachineId);
   if (process.env.SESSION_PUSH_TOKEN) {
-    const legacyMachineId = process.env.SESSION_PUSH_MACHINE_ID || "mac";
-    if (machineId === legacyMachineId) return process.env.SESSION_PUSH_TOKEN;
+    const legacyMachineId = normalizeMachineId(process.env.SESSION_PUSH_MACHINE_ID || "mac");
+    if (normalizedMachineId === legacyMachineId) return process.env.SESSION_PUSH_TOKEN;
   }
   return "";
 }
@@ -915,7 +937,7 @@ function parseMachineTokenMap(value) {
   if (trimmed.startsWith("{")) {
     const parsed = JSON.parse(trimmed);
     for (const [machineId, token] of Object.entries(parsed)) {
-      if (token) map.set(machineId, String(token));
+      if (token) map.set(normalizeMachineId(machineId), String(token));
     }
     return map;
   }
@@ -924,7 +946,7 @@ function parseMachineTokenMap(value) {
     if (separator <= 0) continue;
     const machineId = item.slice(0, separator).trim();
     const token = item.slice(separator + 1).trim();
-    if (machineId && token) map.set(machineId, token);
+    if (machineId && token) map.set(normalizeMachineId(machineId), token);
   }
   return map;
 }

@@ -141,12 +141,13 @@ session-insight.example.com {
 caddy hash-password --plaintext '<你的密码>'
 ```
 
-如果 Caddy 由 Docker Compose 启动，并且 hash 写在 `.env` 中，要把 bcrypt hash 里的 `$` 写成 `$$`，否则 Docker Compose 会把 `$...` 当作变量展开，导致 hash 被破坏。
+有些 Caddy 2.10 Docker 镜像的 `hash-password` 仍会输出 `$2a$...` 这样的原始 bcrypt 字符串，但 `basic_auth` 加载配置时会把密码字段当成 base64 解码。如果输出中包含 `$`，推荐先把 bcrypt hash 做 base64 编码，再写入 Docker Compose 的 `.env`。这样也能避免 Compose 把 `$...` 当作变量展开。
 
 示例：
 
-```text
-SESSION_INSIGHT_PASSWORD_HASH=$$2a$$14$$...
+```bash
+BCRYPT_HASH="$(docker run --rm caddy:2.10.2-alpine caddy hash-password --plaintext '<你的密码>')"
+SESSION_INSIGHT_PASSWORD_HASH="$(printf '%s' "$BCRYPT_HASH" | base64 | tr -d '\n')"
 ```
 
 ## Caddy 在 Docker 里时的注意点
