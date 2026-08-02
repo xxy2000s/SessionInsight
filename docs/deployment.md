@@ -292,10 +292,13 @@ The artifact should not include:
 ```text
 node_modules/
 data/
-.env*
+.env
+.env.*
 real session files
 tokens, passwords, password hashes, domains, or IP addresses
 ```
+
+`.env.example` is intentionally included because it contains placeholders only.
 
 Deployment from a prebuilt artifact:
 

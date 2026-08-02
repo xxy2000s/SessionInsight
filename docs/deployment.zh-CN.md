@@ -217,10 +217,13 @@ session-insight-vX.Y.Z.tar.gz
 ```text
 node_modules/
 data/
-.env*
+.env
+.env.*
 真实 session 文件
 token、密码、密码 hash、真实域名、IP
 ```
+
+`.env.example` 会包含在产物里，因为它只包含占位示例，不包含真实密钥。
 
 服务器部署时可以这样：
 
