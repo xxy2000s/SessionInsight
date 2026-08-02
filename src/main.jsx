@@ -23,6 +23,8 @@ import {
 import remarkGfm from "remark-gfm";
 import "./styles.css";
 
+const BASE_PATH = import.meta.env.BASE_URL.replace(/\/$/, "");
+
 const SESSION_PROVIDERS = [
   { id: "codex", label: "Codex" },
   { id: "claude", label: "Claude" },
@@ -111,9 +113,11 @@ function App() {
     }
     try {
       const data = await fetchJson(
-        force
-          ? `/api/providers/${provider}/rescan`
-          : `/api/providers/${provider}/projects`,
+        apiPath(
+          force
+            ? `/api/providers/${provider}/rescan`
+            : `/api/providers/${provider}/projects`,
+        ),
       );
       if (
         requestId !== projectRequestRef.current ||
@@ -155,7 +159,7 @@ function App() {
       if (!quiet) setError("");
       try {
         const data = await fetchJson(
-          `/api/providers/${provider}/projects/${projectId}/sessions`,
+          apiPath(`/api/providers/${provider}/projects/${projectId}/sessions`),
         );
         if (
           requestId !== sessionsRequestRef.current ||
@@ -239,7 +243,9 @@ function App() {
     const timer = setTimeout(async () => {
       try {
         const data = await fetchJson(
-          `/api/providers/${requestProvider}/sessions/search?q=${encodeURIComponent(query)}&limit=80`,
+          apiPath(
+            `/api/providers/${requestProvider}/sessions/search?q=${encodeURIComponent(query)}&limit=80`,
+          ),
         );
         if (
           requestId !== sessionSearchRequestRef.current ||
@@ -332,7 +338,7 @@ function App() {
     if (!isLive) return undefined;
 
     let fallbackTimer = null;
-    const source = new EventSource(`/api/events?provider=${provider}`);
+    const source = new EventSource(apiPath(`/api/events?provider=${provider}`));
     const startFallback = () => {
       if (!fallbackTimer) fallbackTimer = setInterval(refreshLive, 5_000);
     };
@@ -1568,9 +1574,13 @@ async function fetchJson(url) {
   return data;
 }
 
+function apiPath(path) {
+  return `${BASE_PATH}${path}`;
+}
+
 function sessionDetailUrl(provider, sessionId, includeHiddenEvents = false) {
   const params = includeHiddenEvents ? "?includeHiddenEvents=1" : "";
-  return `/api/providers/${provider}/sessions/${sessionId}${params}`;
+  return apiPath(`/api/providers/${provider}/sessions/${sessionId}${params}`);
 }
 
 function mergeLiveSessionDetail(current, sessionId, nextSession) {
