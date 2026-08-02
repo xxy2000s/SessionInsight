@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/session-insight
 Environment=NODE_ENV=production
-Environment=APP_MODE=remote
+Environment=APP_MODE=production
 Environment=HOST=127.0.0.1
 Environment=PORT=5173
 Environment=SESSION_DATA_DIR=/var/lib/session-insight
@@ -22,4 +22,3 @@ Group=session-insight
 
 [Install]
 WantedBy=multi-user.target
-

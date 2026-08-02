@@ -43,7 +43,7 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, "..");
 const isDev = process.env.NODE_ENV !== "production";
-const appMode = normalizeAppMode(process.env.APP_MODE || (isDev ? "local" : "remote"));
+const appMode = normalizeAppMode(process.env.APP_MODE || (isDev ? "dev" : "production"));
 if (!process.env.SESSION_SOURCE) {
   process.env.SESSION_SOURCE = "local-index";
 }
@@ -311,7 +311,9 @@ function getCookie(req, name) {
 }
 
 function normalizeAppMode(value) {
-  if (value === "local" || value === "remote") return value;
+  if (value === "dev" || value === "production") return value;
+  if (value === "local") return "dev";
+  if (value === "remote") return "production";
   throw new Error(`Unknown APP_MODE: ${value}`);
 }
 

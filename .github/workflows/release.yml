@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      base_path:
+        description: "Optional Vite base path, for example /session-insight/"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build prebuilt artifact
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.18.0"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build client
+        env:
+          BASE_PATH_INPUT: ${{ github.event.inputs.base_path }}
+        run: |
+          if [ -n "$BASE_PATH_INPUT" ]; then
+            export BASE_PATH="$BASE_PATH_INPUT"
+          fi
+          npm run build
+
+      - name: Package runtime artifact
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="manual-${GITHUB_SHA::7}"
+          fi
+          name="session-insight-${version}"
+          mkdir -p "release/${name}"
+          cp package.json package-lock.json README.md AGENTS.md .env.example "release/${name}/"
+          cp -R server deploy docs "release/${name}/"
+          mkdir -p "release/${name}/dist"
+          cp -R dist/client "release/${name}/dist/"
+          tar -C release -czf "release/${name}.tar.gz" "${name}"
+          (cd release && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-insight-prebuilt
+          path: |
+            release/*.tar.gz
+            release/*.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/*.tar.gz release/*.sha256 --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/*.tar.gz release/*.sha256 \
+              --title "$GITHUB_REF_NAME" \
+              --notes "Prebuilt SessionInsight runtime artifact."
+          fi

@@ -1,8 +1,8 @@
 # Deployment Notes
 
-This document records the current production deployment model and the issues found during a real server deployment.
+This document records the supported deployment shapes and the issues found during a real server deployment.
 
-## Recommended Deployment Shape
+## Recommended Shape
 
 Run SessionInsight as a Node service behind an HTTPS reverse proxy.
 
@@ -14,7 +14,7 @@ Browser
   -> sharded index/cache
 ```
 
-The server running SessionInsight must be able to read the local agent session directories:
+The machine running SessionInsight must be able to read the agent session directories:
 
 ```text
 ~/.claude/projects
@@ -36,14 +36,20 @@ Baseline production environment:
 
 ```bash
 NODE_ENV=production
-APP_MODE=remote
+APP_MODE=production
 SESSION_ACCESS_TOKEN=<long-random-token>
 SESSION_DATA_DIR=/var/lib/session-insight
 HOST=127.0.0.1
 PORT=5173
 ```
 
-Production currently fails closed when `SESSION_ACCESS_TOKEN` is missing.
+Production startup currently fails closed when `SESSION_ACCESS_TOKEN` is missing.
+
+`APP_MODE=production` means "run with production defaults and auth requirements". It does not control where session data comes from.
+
+Session data source is controlled by `SESSION_SOURCE`. The current default is `SESSION_SOURCE=local-index`, which scans sessions on the machine where the Node process runs.
+
+Legacy `APP_MODE=remote` is still accepted as an alias for `APP_MODE=production`.
 
 ## systemd
 
@@ -56,35 +62,103 @@ deploy/systemd/session-insight.service.example
 Important points:
 
 - Use `NODE_ENV=production`.
-- Use `APP_MODE=remote`.
+- Use `APP_MODE=production`.
 - Put `SESSION_ACCESS_TOKEN` in an environment file outside the repository.
 - Keep `SESSION_DATA_DIR` writable by the service user.
 - Prefer binding to `127.0.0.1` when the reverse proxy runs on the host network.
+- If a containerized reverse proxy must reach a host service, bind to a private bridge gateway address instead of `0.0.0.0`.
 
-## Build Compatibility
+## Authentication Models
 
-On some Linux servers, `npm run build` can fail even though the Node service can run.
+### Built-in Token Login
 
-The observed failure was:
+SessionInsight has built-in bearer-token authentication in production.
+
+Open the site once with:
 
 ```text
-/lib64/libc.so.6: version `GLIBC_2.33' not found
+https://your-domain.example/?token=<token>
 ```
 
-Cause:
+The app writes an HttpOnly cookie and redirects to the clean URL.
 
-- `vite build` uses Rollup.
-- Rollup installs a platform-specific native optional dependency such as `@rollup/rollup-linux-x64-gnu`.
-- That native binary may require a newer glibc than the server provides.
-- Runtime serving does not use Rollup, so `node server/index.mjs` can still run.
+For direct API checks, send the token explicitly:
 
-Practical options:
+```bash
+curl -H "Authorization: Bearer <token>" \
+  https://your-domain.example/api/health
+```
 
-1. Build on a compatible machine and copy `dist/client` to the server.
-2. Build inside a modern Docker image and copy or run the result.
-3. Upgrade the server OS to a distro with a compatible glibc.
+### Reverse Proxy Basic Auth With Upstream Token Injection
 
-Avoid manually upgrading glibc on a production host unless you are deliberately managing the OS, because it can break system tools.
+If the reverse proxy already provides Basic Auth, SSO, or another access-control layer, a practical deployment is:
+
+```text
+Browser
+  -> reverse proxy auth
+  -> reverse proxy injects Authorization: Bearer <SESSION_ACCESS_TOKEN>
+  -> SessionInsight
+```
+
+This keeps `SESSION_ACCESS_TOKEN` enabled, but users only complete the reverse proxy login.
+
+Caddy example:
+
+```caddyfile
+session-insight.example.com {
+  encode zstd gzip
+
+  basic_auth {
+    user {$SESSION_INSIGHT_PASSWORD_HASH}
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+
+  reverse_proxy 127.0.0.1:5173 {
+    header_up Authorization "Bearer {$SESSION_INSIGHT_TOKEN}"
+  }
+}
+```
+
+Generate the Caddy password hash on the server:
+
+```bash
+caddy hash-password --plaintext '<your-password>'
+```
+
+If Caddy is run by Docker Compose and the hash is stored in a `.env` file, escape every `$` as `$$`. Otherwise Docker Compose may treat parts of the bcrypt hash as environment variables and corrupt it.
+
+Example:
+
+```text
+SESSION_INSIGHT_PASSWORD_HASH=$$2a$$14$$...
+```
+
+Do not commit the token, password, password hash, or real deployment domain.
+
+## Dedicated Domain
+
+For a dedicated domain, build with the default base path:
+
+```bash
+npm run build
+```
+
+Caddy example with only built-in token auth:
+
+```caddyfile
+session-insight.example.com {
+  encode zstd gzip
+
+  reverse_proxy 127.0.0.1:5173
+}
+```
 
 ## Subpath Deployment
 
@@ -102,27 +176,7 @@ Then route the same path prefix to the Node service:
 https://your-domain.example/session-insight/
 ```
 
-`BASE_PATH` is used by Vite so that JavaScript, CSS, favicon, API calls, and SSE connect through the same prefix.
-
-## Caddy Examples
-
-### Dedicated Domain
-
-```caddyfile
-session-insight.example.com {
-  encode zstd gzip
-
-  reverse_proxy 127.0.0.1:5173
-}
-```
-
-Build with the default base path:
-
-```bash
-npm run build
-```
-
-### Subpath On Existing Domain
+Caddy example:
 
 ```caddyfile
 example.com {
@@ -138,11 +192,7 @@ example.com {
 }
 ```
 
-Build with:
-
-```bash
-BASE_PATH=/session-insight/ npm run build
-```
+`BASE_PATH` is used by Vite so JavaScript, CSS, favicon, API calls, and SSE connect through the same prefix.
 
 ## Caddy In Docker
 
@@ -170,53 +220,114 @@ docker inspect <caddy-container>
 
 Only use a bridge address that is not publicly reachable. Do not bind SessionInsight directly to `0.0.0.0` unless you are intentionally exposing it.
 
-## Authentication Options
+## Build Compatibility
 
-Current built-in production auth uses `SESSION_ACCESS_TOKEN`.
+On some Linux servers, `npm run build` can fail even though the Node service can run.
 
-Flow:
-
-```text
-https://your-domain.example/?token=<token>
-```
-
-or, for subpath deployment:
+The observed failure was:
 
 ```text
-https://your-domain.example/session-insight/?token=<token>
+/lib64/libc.so.6: version `GLIBC_2.33' not found
 ```
 
-The app writes an HttpOnly cookie and redirects to the clean URL.
+Cause:
 
-If the reverse proxy already enforces Basic Auth or SSO, this creates two authentication layers:
+- `vite build` uses Rollup.
+- Rollup installs a platform-specific native optional dependency such as `@rollup/rollup-linux-x64-gnu`.
+- That native binary may require a newer glibc than the server provides.
+- Runtime serving does not use Rollup, so `node server/index.mjs` can still run.
+
+Practical options:
+
+1. Build on a compatible machine and copy `dist/client` to the server.
+2. Build inside a modern Docker image and copy or run the result.
+3. Upgrade the server OS to a distro with a compatible glibc.
+
+Avoid manually upgrading glibc on a production host unless you are deliberately managing the OS, because it can break system tools.
+
+## Prebuilt Release Artifacts
+
+GitHub can host already-built deployment artifacts. This is usually better than committing `dist/client` to the repository.
+
+Recommended release artifact shape:
 
 ```text
-reverse proxy auth
-SessionInsight token auth
+session-insight-vX.Y.Z.tar.gz
+  package.json
+  package-lock.json
+  server/
+  dist/client/
+  deploy/
+  docs/
+  README.md
+  AGENTS.md
 ```
 
-This is secure but inconvenient.
-
-Planned improvement:
+The artifact should not include:
 
 ```text
-TRUST_REVERSE_PROXY_AUTH=1
+node_modules/
+data/
+.env*
+real session files
+tokens, passwords, password hashes, domains, or IP addresses
 ```
 
-When implemented, production could run without `SESSION_ACCESS_TOKEN` only when protected by a trusted reverse proxy. Until then, keep the token enabled.
+Deployment from a prebuilt artifact:
+
+```bash
+tar -xzf session-insight-vX.Y.Z.tar.gz -C /opt/session-insight
+cd /opt/session-insight
+npm ci --omit=dev
+systemctl restart session-insight
+```
+
+This avoids running `npm run build` on the server. The server still needs a compatible Node runtime and must install production dependencies, but it does not need Vite, Rollup, or the Rollup native build dependency.
+
+The best long-term release path is:
+
+1. Push source to GitHub.
+2. Use GitHub Actions to run `npm ci`, `npm run lint`, `npm test`, and `npm run build` on a modern Linux runner.
+3. Package source plus `dist/client`.
+4. Attach the tarball to a GitHub Release.
+5. Let servers download that release artifact and run `npm ci --omit=dev`.
+
+This repository includes `.github/workflows/release.yml` for that path.
+
+Create a release by pushing a version tag:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+The workflow produces:
+
+```text
+session-insight-v0.1.1.tar.gz
+session-insight-v0.1.1.tar.gz.sha256
+```
+
+Manual workflow runs also produce a downloadable workflow artifact, but only tag pushes publish a GitHub Release.
+
+Alternative paths:
+
+- Commit `dist/client` to Git: simple, but noisy and easy to forget to refresh.
+- Publish a Docker image: most reproducible, but requires a container runtime and volume mapping for session directories.
+- Build on every target server: simplest source workflow, but fails on older glibc servers.
 
 ## Real Deployment Findings
 
 During a real server deployment:
 
-- The service could read server-local Codex sessions.
+- The service could read server-local Codex sessions through `SESSION_SOURCE=local-index`.
 - The server did not have a Claude session directory yet.
 - Direct server-side build failed because Rollup's native binary required newer glibc.
-- Building locally and copying `dist/client` worked.
+- Building locally, packaging the result, and copying `dist/client` to the server worked.
 - Existing HTTPS was provided by a Caddy container.
-- Subpath deployment required `BASE_PATH=/session-insight/`.
-- Because Caddy ran in Docker, the Node service had to listen on the Docker bridge gateway instead of `127.0.0.1`.
-- Existing reverse proxy Basic Auth plus `SESSION_ACCESS_TOKEN` produced two login steps.
+- A dedicated domain was simpler than mounting under a subpath.
+- Because Caddy ran in Docker, the Node service listened on a private Docker bridge gateway instead of `127.0.0.1`.
+- Reverse proxy Basic Auth plus upstream bearer-token injection avoided a second browser login while keeping SessionInsight's production token enabled.
 
 ## Smoke Tests
 
@@ -226,7 +337,7 @@ Local service health:
 curl -sS http://127.0.0.1:5173/api/health
 ```
 
-Authenticated API check:
+Internal authenticated API check:
 
 ```bash
 TOKEN=$(sed -n 's/^SESSION_ACCESS_TOKEN=//p' /etc/session-insight/session-insight.env)
@@ -234,9 +345,27 @@ curl -sS -H "Authorization: Bearer $TOKEN" \
   http://127.0.0.1:5173/api/providers/codex/projects
 ```
 
-Subpath static asset check:
+Public unauthenticated check should fail when reverse proxy auth is enabled:
 
 ```bash
-curl -I https://your-domain.example/session-insight/
+curl -sS -o /dev/null -w "%{http_code}\n" https://session-insight.example.com/
 ```
 
+Expected:
+
+```text
+401
+```
+
+Public authenticated check:
+
+```bash
+curl -u 'user:<password>' \
+  https://session-insight.example.com/api/health
+```
+
+Expected:
+
+```json
+{"ok":true,"mode":"production","source":"local-index"}
+```

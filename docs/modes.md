@@ -1,10 +1,16 @@
 # Modes
 
-SessionInsight has two supported public modes.
+SessionInsight separates runtime mode from data source mode.
 
-## Local Mode
+Runtime mode answers "how is the app running?"
 
-Local mode is for a developer machine.
+Data source mode answers "where does session data come from?"
+
+## Runtime Modes
+
+### Dev Mode
+
+Dev mode is for local development.
 
 ```bash
 npm run dev
@@ -13,15 +19,53 @@ npm run dev
 Defaults:
 
 ```text
-APP_MODE=local
+APP_MODE=dev
 NODE_ENV=development
-SESSION_SOURCE=local-index
 HOST=127.0.0.1
 PORT=5173
-SESSION_DATA_DIR=./data
 ```
 
-It scans session files for the current OS user:
+### Production Mode
+
+Production mode is for a deployed service behind HTTPS reverse proxy.
+
+```bash
+NODE_ENV=production APP_MODE=production SESSION_ACCESS_TOKEN=... npm start
+```
+
+Defaults and recommendations:
+
+```text
+APP_MODE=production
+NODE_ENV=production
+HOST=127.0.0.1
+PORT=5173
+```
+
+Production startup fails when `SESSION_ACCESS_TOKEN` is not set.
+
+Legacy values are still accepted for compatibility:
+
+```text
+APP_MODE=local  -> dev
+APP_MODE=remote -> production
+```
+
+## Data Source Modes
+
+### Local Index
+
+`SESSION_SOURCE=local-index` is the default data source mode.
+
+It scans session files on the machine running the Node process and writes them into a persistent sharded index/cache.
+
+```text
+SESSION_SOURCE=local-index
+SESSION_DATA_DIR=./data                   # dev default
+SESSION_DATA_DIR=/var/lib/session-insight # production recommendation
+```
+
+Default scanned paths:
 
 ```text
 ~/.claude/projects
@@ -29,26 +73,37 @@ It scans session files for the current OS user:
 ~/.doujie/sessions/links
 ```
 
-## Remote Mode
+This has the same data behavior on a laptop and on a server: it reads the current machine's session files.
 
-Remote mode is for a server that itself runs the coding agents and therefore has local session files.
+### Local Scan Debug Mode
+
+`SESSION_SOURCE=local-scan` bypasses the persistent sharded cache and directly scans files on request.
 
 ```bash
-NODE_ENV=production APP_MODE=remote SESSION_ACCESS_TOKEN=... npm start
+npm run dev:scan
 ```
 
-Defaults and recommendations:
+Use it only when debugging parsers.
+
+### Future Linked / Push Mode
+
+A future linked data mode should be separate from `APP_MODE`.
+
+Potential shape:
 
 ```text
-APP_MODE=remote
-NODE_ENV=production
-SESSION_SOURCE=local-index
-HOST=127.0.0.1
-PORT=5173
-SESSION_DATA_DIR=/var/lib/session-insight
+APP_MODE=production
+SESSION_SOURCE=hybrid-index
 ```
 
-Run it behind HTTPS reverse proxy. Production startup fails when `SESSION_ACCESS_TOKEN` is not set.
+That mode would combine:
+
+```text
+server-local session scanning
+Mac-side outbound session push
+```
+
+The current open-source version does not yet implement push ingestion.
 
 ## Path Overrides
 
@@ -62,14 +117,3 @@ SESSION_DATA_DIR=/var/lib/session-insight
 ```
 
 The service account must be able to read the session directories and write `SESSION_DATA_DIR`.
-
-## Debug Mode
-
-`SESSION_SOURCE=local-scan` bypasses the persistent sharded cache and directly scans files on request.
-
-```bash
-npm run dev:scan
-```
-
-Use it only when debugging parsers.
-

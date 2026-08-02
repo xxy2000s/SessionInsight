@@ -18,6 +18,7 @@ Read these before changing runtime behavior or deployment docs:
 - `README.md`
 - `docs/modes.md`
 - `docs/deployment.md`
+- `docs/deployment.zh-CN.md`
 - `docs/security.md`
 - `docs/open-source-release.md`
 
@@ -34,8 +35,9 @@ Read these before changing runtime behavior or deployment docs:
 
 ## Runtime Contracts
 
-- Official modes are `APP_MODE=local` and `APP_MODE=remote`.
-- Both official modes scan the machine running the service.
+- Official runtime modes are `APP_MODE=dev` and `APP_MODE=production`.
+- Legacy `APP_MODE=local` and `APP_MODE=remote` are accepted as aliases.
+- Data source behavior is controlled by `SESSION_SOURCE`, not `APP_MODE`.
 - `SESSION_SOURCE=local-index` is the default read path.
 - `SESSION_SOURCE=local-scan` is only for parser debugging.
 - Production requires `SESSION_ACCESS_TOKEN`.
