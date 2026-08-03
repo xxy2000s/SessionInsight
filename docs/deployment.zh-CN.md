@@ -339,6 +339,8 @@ npm run push -- --once
 
 ## 当前已知状态
 
+更细的踩坑记录和排障命令见 [pitfalls.md](pitfalls.md)，包括 Caddy Basic Auth hash、GitHub SSH 443、push 安全和浏览器测试凭据处理。
+
 当前部署已经验证过的事实：
 
 - 独立域名 HTTPS 接入可用。

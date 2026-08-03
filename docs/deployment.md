@@ -345,6 +345,8 @@ Alternative paths:
 
 ## Real Deployment Findings
 
+See [pitfalls.md](pitfalls.md) for incident-level notes and exact checks for Caddy auth, GitHub SSH over 443, push safety, and browser-test credential handling.
+
 During a real server deployment:
 
 - The service could read server-local Codex sessions through `SESSION_SOURCE=local-index`.

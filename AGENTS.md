@@ -19,6 +19,7 @@ Read these before changing runtime behavior or deployment docs:
 - `docs/modes.md`
 - `docs/deployment.md`
 - `docs/deployment.zh-CN.md`
+- `docs/pitfalls.md`
 - `docs/security.md`
 - `docs/open-source-release.md`
 

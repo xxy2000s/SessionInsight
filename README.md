@@ -76,7 +76,7 @@ https://your-domain.example/?token=<long-random-browser-token>
 
 The server sets an HttpOnly cookie and redirects to `/`.
 
-For real deployment notes, including `BASE_PATH`, Caddy examples, Docker bridge networking, reverse proxy auth, and Rollup/glibc build compatibility, see [docs/deployment.md](docs/deployment.md).
+For real deployment notes, including `BASE_PATH`, Caddy examples, Docker bridge networking, reverse proxy auth, and Rollup/glibc build compatibility, see [docs/deployment.md](docs/deployment.md). Known deployment and maintenance pitfalls are collected in [docs/pitfalls.md](docs/pitfalls.md).
 
 Chinese deployment notes are available at [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md).
 
